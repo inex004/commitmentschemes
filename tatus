@@ -1,0 +1,17 @@
+[33m94ae43e[m[33m ([m[1;36mHEAD[m[33m -> [m[1;32mmain[m[33m, [m[1;31morigin/main[m[33m)[m working but issues of symmetric NAT
+[33m2f2a8a5[m without pki list and with UPnP
+[33m7c588af[m with cloud
+[33me8d72b0[m with validator as well
+[33m715b8b4[m latest version with upgrades
+[33m5c71809[m with sync clock
+[33m5ac9adc[m latest with multiple updates- lamport clock saved from fast forward attack1 and sybil merged in evil file along with hammer to disconnect rogue node forcefully
+[33mc64f923[m latest with multiple updates- lamport clock saved from fast forward attack1 and sybil merged in evil file
+[33m4baa78d[m latest with multiple updates- lamport clock saved from fast forward attack1
+[33m69dbea8[m latest with multiple updates- lamport clock saved from fast forward attack
+[33mf5431cd[m latest with multiple updates
+[33m9bef145[m draft one
+[33m39ed2f1[m fourth commit
+[33m619214f[m third commit  with security fix
+[33m94da3f0[m second commit with commit and reveal bid phases
+[33mafa5b7e[m first commit-atomic commit 1
+[33m39fd22d[m first commit-atomic commit
