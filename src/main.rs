@@ -1,13 +1,12 @@
 mod crypto;
 mod network;
 mod auction;
-mod hole_punch; // 🔥 NEW: Import our raw UDP sprayer
-mod magicsock;  // 🔥 NEW: Import the MagicSocket
+mod hole_punch; 
+mod magicsock;  
 
 use std::fs;
 use std::collections::HashSet;
-use curve25519_dalek::scalar::Scalar;
-use rand::thread_rng;
+use rand::{thread_rng, Rng}; // ✅ Needed for generating the nonce
 use std::error::Error;
 use tokio::{io, io::AsyncBufReadExt, select, time}; 
 use futures::StreamExt; 
@@ -17,7 +16,6 @@ use libp2p::kad::RecordKey;
 use std::env;
 use std::time::{SystemTime, UNIX_EPOCH, Duration}; 
 
-const HEARTBEAT_TIMEOUT: u64 = 600;
 const RELAY_PEER_ID: &str = "12D3KooWFTkBYJMDsxZPD2NENnBGTUwA5BRWEMRuPDUYuV2Mpxgx"; 
 
 #[tokio::main]
@@ -27,7 +25,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let args: Vec<String> = env::args().collect();
     let listen_port: u16 = args[1].parse().expect("Invalid port");
     
-    let key_file = format!("meter_{}.key", listen_port);
+    let key_file = format!("node_{}.key", listen_port); 
     let id_keys = if let Ok(bytes) = fs::read(&key_file) {
         libp2p::identity::Keypair::from_protobuf_encoding(&bytes).unwrap()
     } else {
@@ -38,7 +36,6 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     let local_peer_id = id_keys.public().to_peer_id();
     
-    // 🔥 NEW: Initialize the MagicSocket! (Using listen_port + 100)
     let mut magic_sock = magicsock::MagicSocket::new(listen_port + 100, id_keys.clone());
     println!("🪄 MagicSocket bound and roaming enabled on port {}", listen_port + 100);
 
@@ -46,12 +43,10 @@ async fn main() -> Result<(), Box<dyn Error>> {
     
     let listen_addr: libp2p::Multiaddr = format!("/ip4/0.0.0.0/udp/{}/quic-v1", listen_port).parse()?;
     swarm.listen_on(listen_addr.clone())?;
-
-    // 🔥 NEW: Enable Dual-Stack IPv6 Listening!
     swarm.listen_on(format!("/ip6/::/udp/{}/quic-v1", listen_port).parse()?)?;
 
     println!("=========================================================");
-    println!("      ⚡ DECENTRALIZED P2P ENERGY MARKETPLACE ⚡      ");
+    println!("      🎨 DECENTRALIZED P2P NFT-ART AUCTION 🎨      ");
     println!("=========================================================");
     println!("My Permanent Peer ID: {}", local_peer_id);
     println!("---------------------------------------------------------");
@@ -68,25 +63,21 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     let mut stdin = io::BufReader::new(io::stdin()).lines();
     let mut state = auction::MarketplaceState::new();
-    let topic = libp2p::gossipsub::IdentTopic::new("energy-auction");
+    let topic = libp2p::gossipsub::IdentTopic::new("energy-auction"); 
     let mut background_timer = time::interval(Duration::from_secs(10));
-    let mut last_heartbeat_sent = 0;
     let mut has_revealed = false; 
     let mut executed_auctions = std::collections::HashSet::new(); 
     
     let mut known_peers = HashSet::new();
     let room_key = RecordKey::new(&"energy-auction");
 
-    // 🔥 NEW: State tracking for our raw UDP sprayer
     let mut my_public_ip: Option<String> = None;
     let mut sprayed_peers = HashSet::new(); 
     
-    // 🔥 NEW: A fast timer to poll the MagicSocket for incoming direct data
     let mut magicsock_timer = time::interval(Duration::from_millis(50));
     
     loop {
         select! {
-            // 🔥 NEW: Catch incoming direct UDP packets that bypassed the Relay!
             _ = magicsock_timer.tick() => {
                 while let Some((sender_peer, payload)) = magic_sock.poll_incoming() {
                     let message = String::from_utf8_lossy(&payload);
@@ -98,7 +89,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
             _ = background_timer.tick() => {
                 let current_unix_secs = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
                 let mut local_resolution_queue = Vec::new();
-                // 🔥 FIX: Periodically broadcast our Public IP so newly joined peers can hear it!
+                
                 if let Some(ip_str) = &my_public_ip {
                     let msg = network::NetworkMessage::NatSignal {
                         peer_id: local_peer_id.to_string(),
@@ -140,49 +131,18 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 }
 
                 for (auction_id, current_auction) in state.active_auctions.iter_mut() {
-                    if current_auction.is_delivering && !current_auction.slashed {
-                        if current_auction.seller_id == local_peer_id.to_string() {
-                            if !state.unplugged_meters.contains(auction_id) && current_unix_secs.saturating_sub(last_heartbeat_sent) >= 5 {
-                                current_auction.energy_delivered += 50; 
-                                if current_auction.energy_delivered >= current_auction.energy_amount {
-                                    println!("✅ [SMART METER]: Delivery Complete!");
-                                    current_auction.is_delivering = false;
-                                    let msg = network::NetworkMessage::DeliveryComplete { auction_id: auction_id.clone(), seller_id: local_peer_id.to_string() };
-                                    let _ = swarm.behaviour_mut().gossipsub.publish(topic.clone(), serde_json::to_string(&msg).unwrap().as_bytes());
-                                } else {
-                                    println!("⚡ [SMART METER]: Routing energy... {}/{} kWh", current_auction.energy_delivered, current_auction.energy_amount);
-                                    let msg = network::NetworkMessage::Heartbeat { auction_id: auction_id.clone(), seller_id: local_peer_id.to_string() };
-                                    let _ = swarm.behaviour_mut().gossipsub.publish(topic.clone(), serde_json::to_string(&msg).unwrap().as_bytes());
-                                    last_heartbeat_sent = current_unix_secs;
-                                }
-                            }
-                        } else if current_unix_secs.saturating_sub(current_auction.last_heartbeat) > HEARTBEAT_TIMEOUT {
-                            println!("\n🚨🚨🚨 CRITICAL ORACLE FAILURE DETECTED 🚨🚨🚨");
-                            let penalty = current_auction.reserve_price * 2;
-                            if current_auction.seller_id == local_peer_id.to_string() {
-                                state.my_locked_credits -= penalty;
-                            }
-                            if Some(local_peer_id.to_string()) == current_auction.winner_id {
-                                state.my_credits += 100;
-                            }
-                            current_auction.slashed = true;
-                            current_auction.is_delivering = false;
-                        }
-                    }
-
                     if current_unix_secs > current_auction.commit_deadline && current_unix_secs <= current_auction.reveal_deadline && !current_auction.resolved {
                         if Some(auction_id.clone()) == state.current_joined_auction && !has_revealed {
-                            if let (Some(bid), Some(blind)) = (state.my_secret_bid, state.my_secret_blind) {
-                                println!("🔓 REVEAL PHASE: Broadcasting Bid and Random Value...");
+                            // ✅ Auto-Reveal Logic Updated
+                            if let (Some(bid), Some(nonce)) = (state.my_secret_bid, state.my_secret_nonce) {
+                                println!("🔓 REVEAL PHASE: Broadcasting Bid and Random Nonce...");
                                 let msg = network::NetworkMessage::Reveal {
                                     auction_id: auction_id.clone(), bidder_id: local_peer_id.to_string(),
-                                    bid, blind_hex: hex::encode(blind.as_bytes()),
+                                    bid, nonce_hex: hex::encode(nonce),
                                 };
                                 let _ = swarm.behaviour_mut().gossipsub.publish(topic.clone(), serde_json::to_string(&msg).unwrap().as_bytes());
                                 current_auction.verified_bids.insert(local_peer_id.to_string(), bid);
-                                let mut blind_bytes = [0u8; 32];
-                                blind_bytes.copy_from_slice(blind.as_bytes());
-                                current_auction.verified_blinds.insert(local_peer_id.to_string(), blind_bytes);
+                                current_auction.verified_nonces.insert(local_peer_id.to_string(), nonce);
                                 has_revealed = true;
                             }
                         }
@@ -241,12 +201,12 @@ async fn main() -> Result<(), Box<dyn Error>> {
                         }
                         
                         if auction_to_close.failed {
-                            println!("❌ [AUCTION FAILED]: Not enough valid bids. Returning funds and energy.");
+                            println!("❌ [AUCTION FAILED]: Not enough valid bids. Returning funds and art.");
                             if auction_to_close.seller_id == my_id {
                                 state.my_locked_credits -= stake_amount;
                                 state.my_credits += stake_amount;
-                                state.my_locked_energy -= auction_to_close.energy_amount;
-                                state.my_energy += auction_to_close.energy_amount;
+                                state.escrowed_art.retain(|&x| x != auction_to_close.token_id);
+                                state.my_art_vault.push(auction_to_close.token_id);
                             }
                             if let Some(my_bid) = auction_to_close.verified_bids.get(&my_id) {
                                 state.my_locked_credits -= my_bid;
@@ -259,24 +219,21 @@ async fn main() -> Result<(), Box<dyn Error>> {
                             if auction_to_close.seller_id == my_id {
                                 state.my_locked_credits -= stake_amount;
                                 state.my_credits += stake_amount + price - validator_fee; 
-                                state.my_locked_energy -= auction_to_close.energy_amount; 
-                                // 🔥 NEW: Tell the seller they got paid!
-                                println!("🎉 [MARKET CLEARED]: Sold {} kWh for {} credits to peer {}!", 
-                                         auction_to_close.energy_amount, price, &winner[0..8]);
+                                state.escrowed_art.retain(|&x| x != auction_to_close.token_id);
+                                println!("🎉 [MARKET CLEARED]: Sold Art Token #{} for {} credits to peer {}!", 
+                                         auction_to_close.token_id, price, &winner[0..8]);
                             }
                             
                             if winner == &my_id {
                                 let my_bid = auction_to_close.verified_bids.get(&my_id).unwrap();
                                 state.my_locked_credits -= my_bid;
                                 state.my_credits += my_bid - price; 
-                                state.my_energy += auction_to_close.energy_amount; 
-                                // 🔥 NEW: Tell the buyer they won!
-                                println!("🏆 [VICTORY]: You won the auction! Received {} kWh for {} credits (Refunded {} overbid).", 
-                                         auction_to_close.energy_amount, price, my_bid - price);
+                                state.my_art_vault.push(auction_to_close.token_id);
+                                println!("🏆 [VICTORY]: You won the auction! Received Art Token #{} for {} credits (Refunded {} overbid).", 
+                                         auction_to_close.token_id, price, my_bid - price);
                             } else if let Some(my_bid) = auction_to_close.verified_bids.get(&my_id) {
                                 state.my_locked_credits -= my_bid;
                                 state.my_credits += my_bid;
-                                // 🔥 NEW: Tell the loser they got their money back!
                                 println!("⚖️ [OUTBID]: You did not win the auction. Refunded your {} credits.", my_bid);
                             }
                         }
@@ -291,25 +248,28 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 if line_str == "WALLET" {
                     println!("\n💰 YOUR VIRTUAL LEDGER 💰");
                     println!("   Credits: {} (Locked: {})", state.my_credits, state.my_locked_credits);
-                    println!("   Battery: {} kWh (Locked: {} kWh)\n", state.my_energy, state.my_locked_energy);
+                    println!("   Art Vault: {:?} (Escrowed: {:?})\n", state.my_art_vault, state.escrowed_art);
                 }
-                else if line_str.starts_with("SELL ") && parts.len() == 3 {
-                    if let (Ok(energy_amount), Ok(reserve_price)) = (parts[1].parse::<u64>(), parts[2].parse::<u64>()) {
+                else if line_str.starts_with("AUCTION_ART ") && parts.len() == 3 {
+                    if let (Ok(token_id), Ok(reserve_price)) = (parts[1].parse::<u64>(), parts[2].parse::<u64>()) {
                         let required_stake = reserve_price * 2;
-                        if state.my_credits < required_stake {
-                            println!("❌ Error: Need {} credits.", required_stake);
+                        if !state.my_art_vault.contains(&token_id) {
+                            println!("❌ Error: You do not own Art Token #{}.", token_id);
+                        } else if state.my_credits < required_stake {
+                            println!("❌ Error: Need {} credits for the honesty stake.", required_stake);
                         } else {
                             state.my_credits -= required_stake;
                             state.my_locked_credits += required_stake;
-                            state.my_energy -= energy_amount;
-                            state.my_locked_energy += energy_amount;
+                            state.my_art_vault.retain(|&x| x != token_id);
+                            state.escrowed_art.push(token_id);
+                            
                             let current_unix_secs = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
                             let new_auction_id = format!("AUC_{}", current_unix_secs); 
                             println!("📢 AUCTION LIVE! Your unique Auction ID is: {}", new_auction_id);
-                            let new_auction = auction::Auction::new(new_auction_id.clone(), local_peer_id.to_string(), energy_amount, reserve_price);
+                            let new_auction = auction::Auction::new(new_auction_id.clone(), local_peer_id.to_string(), token_id, reserve_price);
                             state.active_auctions.insert(new_auction_id.clone(), new_auction);
                             let msg = network::NetworkMessage::AnnounceAuction {
-                                auction_id: new_auction_id, seller_id: local_peer_id.to_string(), energy_amount, reserve_price,
+                                auction_id: new_auction_id, seller_id: local_peer_id.to_string(), token_id, reserve_price,
                             };
                             let _ = swarm.behaviour_mut().gossipsub.publish(topic.clone(), serde_json::to_string(&msg).unwrap().as_bytes());
                         }
@@ -326,7 +286,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
                         else { "🔴 RESOLVING".to_string() };
                         
                         let val_status = if a.validator_id.is_some() { "🛡️ Guarded" } else { "⚠️ Unvalidated" };
-                        println!("   ID: {} | {} | {} kWh | Reserve: {} | {}", id, val_status, a.energy_amount, a.reserve_price, status);
+                        println!("   ID: {} | {} | Token #{} | Reserve: {} | {}", id, val_status, a.token_id, a.reserve_price, status);
                     }
                 } 
                 else if line_str.starts_with("VALIDATE ") && parts.len() == 2 {
@@ -362,26 +322,38 @@ async fn main() -> Result<(), Box<dyn Error>> {
                         } else {
                             state.my_credits -= bid_amount;
                             state.my_locked_credits += bid_amount;
+                            
+                            // ✅ THE NEW CRYPTOGRAPHIC "TWO-HASH" BIDDING LOGIC
                             let mut rng = thread_rng();
-                            let r = Scalar::random(&mut rng);
+                            let mut nonce = [0u8; 32];
+                            rng.fill(&mut nonce);
+                            
                             state.my_secret_bid = Some(bid_amount);
-                            state.my_secret_blind = Some(r);
-                            let my_commitment = crypto::commit(bid_amount, r);
-                            let commitment_hex = hex::encode(my_commitment.compress().as_bytes());
-                            let my_binding_hash = crypto::generate_binding_hash(&commitment_hex, &local_peer_id.to_string());
+                            state.my_secret_nonce = Some(nonce);
+                            
+                            // Hash 1: Derive the Identity-Bound Scalar
+                            let s = crypto::derive_scalar(&local_peer_id.to_string(), &nonce);
+                            
+                            // Curve Math: Calculate the Pedersen Commitment
+                            let my_commitment = crypto::commit(bid_amount, s);
+                            
+                            // Hash 2: Calculate the anonymous network payload hash
+                            let my_payload_hash = crypto::generate_payload_hash(my_commitment);
                             
                             if let Some(joined_auction) = state.active_auctions.get_mut(joined_id) {
-                                joined_auction.received_commitments.insert(local_peer_id.to_string(), my_binding_hash.clone());
+                                joined_auction.received_commitments.insert(local_peer_id.to_string(), my_payload_hash.clone());
                             }
+                            
                             let msg = network::NetworkMessage::Commit {
-                                auction_id: joined_id.clone(), bidder_id: local_peer_id.to_string(), binding_hash: my_binding_hash, 
+                                auction_id: joined_id.clone(), 
+                                bidder_id: local_peer_id.to_string(), 
+                                payload_hash: my_payload_hash, 
                             };
                             let _ = swarm.behaviour_mut().gossipsub.publish(topic.clone(), serde_json::to_string(&msg).unwrap().as_bytes());
-                            println!("🔒 Locked {} credits. Sent Binding Hash!", bid_amount);
+                            println!("🔒 Locked {} credits. Sent Payload Hash to network!", bid_amount);
                         }
                     }
                 }
-                // 🔥 NEW: Manually inject a route to bypass the Gossipsub paradox!
                 else if line_str.starts_with("ROUTE ") && parts.len() == 3 {
                     if let (Ok(target_peer), Ok(target_addr)) = (parts[1].parse::<libp2p::identity::PeerId>(), parts[2].parse::<std::net::SocketAddr>()) {
                         magic_sock.add_peer_route(target_peer, target_addr);
@@ -390,7 +362,6 @@ async fn main() -> Result<(), Box<dyn Error>> {
                         println!("❌ Invalid format. Use: ROUTE <PEER_ID> <IP:PORT>");
                     }
                 }
-                // 🔥 NEW: Type "MAGIC <PEER_ID> <MESSAGE>" to fire a direct UDP packet!
                 else if line_str.starts_with("MAGIC ") && parts.len() >= 3 {
                     if let Ok(target_peer) = parts[1].parse::<libp2p::identity::PeerId>() {
                         let payload = parts[2..].join(" ").into_bytes();
@@ -403,11 +374,9 @@ async fn main() -> Result<(), Box<dyn Error>> {
             }
 
             event = swarm.select_next_some() => match event {
-                // 🔥 FIX: Correctly unpack the Identify Event
                 SwarmEvent::Behaviour(network::AuctionNetworkBehaviourEvent::Identify(libp2p::identify::Event::Received { peer_id: _, info })) => {
                     if my_public_ip.is_none() {
                         for protocol in info.observed_addr.iter() {
-                            // 🔥 NEW: Check for IPv6 FIRST! 
                             if let Protocol::Ip6(ip) = protocol {
                                 let ip_str = ip.to_string();
                                 println!("🌌 [IPV6 SIGNALING]: The Cloud Relay sees our Public IPv6 as: {}", ip_str);
@@ -420,7 +389,6 @@ async fn main() -> Result<(), Box<dyn Error>> {
                                 let _ = swarm.behaviour_mut().gossipsub.publish(topic.clone(), serde_json::to_string(&msg).unwrap().as_bytes());
                                 break;
                             } 
-                            // Fallback to IPv4 if IPv6 isn't available
                             else if let Protocol::Ip4(ip) = protocol {
                                 let ip_str = ip.to_string();
                                 println!("🔍 [IPV4 SIGNALING]: The Cloud Relay sees our Public IPv4 as: {}", ip_str);
@@ -468,17 +436,11 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 },
                 
                 SwarmEvent::Dialing { peer_id, .. } => {
-                    if let Some(_peer) = peer_id {
-                        // Muted to prevent spam!
-                        // println!("📞 [DIALER]: Swarm is actively attempting to dial {}...", &_peer.to_string()[0..8]);
-                    }
+                    if let Some(_peer) = peer_id { }
                 },
 
                 SwarmEvent::OutgoingConnectionError { peer_id, error: _error, .. } => {
-                    if let Some(_peer) = peer_id {
-                        // Muted to prevent spam!
-                        // println!("💥 [CONNECTION FAILED]: Could not reach peer {}. Reason: {:?}", &_peer.to_string()[0..8], _error);
-                    }
+                    if let Some(_peer) = peer_id { }
                 },
 
                 SwarmEvent::NewListenAddr { address, .. } => {
@@ -550,7 +512,6 @@ async fn main() -> Result<(), Box<dyn Error>> {
                                     println!("🎯 [SIGNALING]: Received Public IP ({}) from Peer {}.", public_ip, &peer_id[0..8]);
                                     sprayed_peers.insert(peer_id.clone());
 
-                                    // If we haven't shared our IP yet, do it now so they can spray back!
                                     if let Some(my_ip) = &my_public_ip {
                                         let reply = network::NetworkMessage::NatSignal {
                                             peer_id: local_peer_id.to_string(),
@@ -559,19 +520,14 @@ async fn main() -> Result<(), Box<dyn Error>> {
                                         let _ = swarm.behaviour_mut().gossipsub.publish(topic.clone(), serde_json::to_string(&reply).unwrap().as_bytes());
                                     }
 
-                                    // 🚀 LAUNCH THE SPRAY IN A BACKGROUND THREAD 🚀
                                     let target_ip = public_ip.clone();
                                     tokio::task::spawn_blocking(move || {
-                                        // Spray common ephemeral port ranges (e.g., 50000 to 51000)
                                         if let Some(golden_addr) = hole_punch::execute_port_spray(&target_ip, 50000, 51000) {
                                             println!("🌟 [SUCCESS]: We have a direct, raw UDP line to {}!", golden_addr);
                                         }
                                     });
 
-                                    // 🔥 NEW: Add their IP to our MagicSocket routing table!
                                     if let (Ok(target_peer), Ok(parsed_ip)) = (peer_id.parse::<libp2p::identity::PeerId>(), public_ip.parse::<std::net::IpAddr>()) {
-                                        // Assume they bound their magicsock to their listen port + 100
-                                        // (For testing, we will assume standard port 8102 if they are Terminal B)
                                         let assumed_magic_port = if public_ip == my_public_ip.clone().unwrap_or_default() { 8102 } else { 8101 };
                                         let target_addr = std::net::SocketAddr::new(parsed_ip, assumed_magic_port);
                                         
@@ -580,10 +536,10 @@ async fn main() -> Result<(), Box<dyn Error>> {
                                     }
                                 }
                             },
-                            network::NetworkMessage::AnnounceAuction { auction_id, seller_id, energy_amount, reserve_price } => {
+                            network::NetworkMessage::AnnounceAuction { auction_id, seller_id, token_id, reserve_price } => {
                                 if !state.active_auctions.contains_key(&auction_id) {
-                                    println!("📢 NEW MARKET: {}... selling {} kWh (Reserve: {}, ID: {})", &seller_id[0..8], energy_amount, reserve_price, auction_id);
-                                    let new_auction = auction::Auction::new(auction_id.clone(), seller_id, energy_amount, reserve_price);
+                                    println!("📢 NEW MARKET: {}... auctioning Art Token #{} (Reserve: {}, ID: {})", &seller_id[0..8], token_id, reserve_price, auction_id);
+                                    let new_auction = auction::Auction::new(auction_id.clone(), seller_id, token_id, reserve_price);
                                     state.active_auctions.insert(auction_id, new_auction);
                                 }
                             },
@@ -602,36 +558,33 @@ async fn main() -> Result<(), Box<dyn Error>> {
                                     target_auction.verdict_received = true; 
                                 }
                             },
-                            network::NetworkMessage::Commit { auction_id, bidder_id, binding_hash } => {
+                            // ✅ NEW: Receive Payload Hash
+                            network::NetworkMessage::Commit { auction_id, bidder_id, payload_hash } => {
                                 if let Some(target_auction) = state.active_auctions.get_mut(&auction_id) {
                                     if !target_auction.received_commitments.contains_key(&bidder_id) {
                                         println!("📥 Network: Received hidden cryptographic bid from {}...", &bidder_id[0..8]);
-                                        target_auction.received_commitments.insert(bidder_id, binding_hash);
+                                        target_auction.received_commitments.insert(bidder_id, payload_hash);
                                     }
                                 }
                             },
-                            network::NetworkMessage::Reveal { auction_id, bidder_id, bid, blind_hex } => {
+                            // ✅ NEW: Verify the Payload Hash using the newly revealed raw nonce
+                            network::NetworkMessage::Reveal { auction_id, bidder_id, bid, nonce_hex } => {
                                 if let Some(target_auction) = state.active_auctions.get_mut(&auction_id) {
-                                    if let Some(stored_binding_hash) = target_auction.received_commitments.get(&bidder_id) {
-                                        if crypto::verify_binding_hash(stored_binding_hash, bid, &blind_hex, &bidder_id) {
+                                    if let Some(stored_payload_hash) = target_auction.received_commitments.get(&bidder_id) {
+                                        
+                                        if crypto::verify_payload_hash(stored_payload_hash, bid, &nonce_hex, &bidder_id) {
                                             target_auction.verified_bids.insert(bidder_id.clone(), bid);
+                                            
+                                            // Extract the byte array to save for tie-breakers
+                                            let mut nonce_bytes = [0u8; 32];
+                                            hex::decode_to_slice(&nonce_hex, &mut nonce_bytes).unwrap();
+                                            target_auction.verified_nonces.insert(bidder_id.clone(), nonce_bytes);
+                                            
                                             println!("👀 Network: Peer {} revealed their bid of {} credits!", &bidder_id[0..8], bid);
+                                        } else {
+                                            println!("🚨 Network: Peer {} failed cryptographic verification! Slashing penalty incoming...", &bidder_id[0..8]);
                                         }
                                     }
-                                }
-                            },
-                            // 🔥 NEW: Catch the Smart Meter Heartbeats!
-                            network::NetworkMessage::Heartbeat { auction_id, .. } => {
-                                if let Some(target_auction) = state.active_auctions.get_mut(&auction_id) {
-                                    // Reset the 10-minute death timer every time a heartbeat arrives
-                                    target_auction.last_heartbeat = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
-                                }
-                            },
-                            // 🔥 NEW: Catch the Delivery Complete signal so we can close the contract
-                            network::NetworkMessage::DeliveryComplete { auction_id, .. } => {
-                                if let Some(target_auction) = state.active_auctions.get_mut(&auction_id) {
-                                    target_auction.is_delivering = false;
-                                    println!("🔌 [SMART METER]: Peer confirmed energy delivery for {} is complete!", auction_id);
                                 }
                             },
                             _ => {}

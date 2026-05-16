@@ -1,6 +1,6 @@
 use libp2p::{
     gossipsub, identify, identity, noise, yamux, relay, autonat, dcutr, ping, 
-    kad, kad::store::MemoryStore, upnp, // 🔥 NEW: Imported upnp
+    kad, kad::store::MemoryStore, upnp,
     swarm::NetworkBehaviour,
     PeerId, SwarmBuilder, Transport,
 };
@@ -12,15 +12,13 @@ use serde::{Deserialize, Serialize};
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub enum NetworkMessage {
-    AnnounceAuction { auction_id: String, seller_id: String, energy_amount: u64, reserve_price: u64 },
+    AnnounceAuction { auction_id: String, seller_id: String, token_id: u64, reserve_price: u64 },
     IntentToValidate { auction_id: String, validator_id: String },
     Verdict { auction_id: String, validator_id: String, winner_id: Option<String>, clearing_price: u64, slash_list: Vec<String> },
-    Commit { auction_id: String, bidder_id: String, binding_hash: String },
-    Reveal { auction_id: String, bidder_id: String, bid: u64, blind_hex: String },
-    Heartbeat { auction_id: String, seller_id: String },
-    DeliveryComplete { auction_id: String, seller_id: String },
-    
-    // 🔥 NEW: The Signaling Message for our custom hole puncher
+    // ✅ Updated to payload_hash
+    Commit { auction_id: String, bidder_id: String, payload_hash: String },
+    // ✅ Updated to nonce_hex
+    Reveal { auction_id: String, bidder_id: String, bid: u64, nonce_hex: String },
     NatSignal { peer_id: String, public_ip: String },
 }
 
@@ -33,7 +31,7 @@ pub struct AuctionNetworkBehaviour {
     pub autonat: autonat::Behaviour,
     pub ping: ping::Behaviour,
     pub kad: kad::Behaviour<MemoryStore>, 
-    pub upnp: upnp::tokio::Behaviour, // 🔥 NEW: Added UPnP Network Behaviour
+    pub upnp: upnp::tokio::Behaviour,
 }
 
 pub fn setup_swarm(
@@ -88,7 +86,7 @@ pub fn setup_swarm(
             autonat: autonat::Behaviour::new(local_peer_id, autonat::Config::default()),
             ping: ping::Behaviour::new(ping::Config::new()),
             kad: kademlia, 
-            upnp: upnp::tokio::Behaviour::default(), // 🔥 NEW: Initialize UPnP mapping
+            upnp: upnp::tokio::Behaviour::default(),
         })?
         .with_swarm_config(|c: libp2p::swarm::Config| c.with_idle_connection_timeout(Duration::from_secs(300)))
         .build();
