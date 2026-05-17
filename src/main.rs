@@ -411,6 +411,9 @@ async fn main() -> Result<(), Box<dyn Error>> {
                     if peer_id.to_string() == RELAY_PEER_ID {
                         println!("📡 [RELAY]: Securely attached to Cloud Relay.");
                         swarm.behaviour_mut().kad.add_address(&peer_id, addr.clone());
+                        // 🔥 NEW: Explicitly invite the Cloud Relay to the Gossipsub Mesh!
+
+                        swarm.behaviour_mut().gossipsub.add_explicit_peer(&peer_id);
                         
                         match swarm.behaviour_mut().kad.bootstrap() {
                             Ok(_) => println!("🔍 [DHT]: Bootstrap initiated. Mapping the local database..."),

@@ -1,0 +1,197 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>P2P Auction Node</title>
+    <style>
+        :root { --bg: #0f172a; --surface: #1e293b; --primary: #38bdf8; --text: #f8fafc; --success: #4ade80; }
+        * { box-sizing: border-box; margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+        body { background: var(--bg); color: var(--text); display: flex; justify-content: center; min-height: 100vh; padding: 20px; }
+        .container { background: var(--surface); padding: 30px; border-radius: 16px; width: 100%; max-width: 420px; box-shadow: 0 10px 30px rgba(0,0,0,0.5); align-self: center; }
+        
+        h2 { color: var(--primary); text-align: center; margin-bottom: 5px; }
+        .subtitle { text-align: center; color: #94a3b8; font-size: 14px; margin-bottom: 25px; }
+        
+        .box { background: #000; padding: 15px; border-radius: 8px; font-family: "Courier New", monospace; font-size: 13px; word-break: break-all; margin-bottom: 20px; border: 1px solid #334155; }
+        .label { color: var(--primary); font-family: sans-serif; font-size: 12px; margin-bottom: 5px; text-transform: uppercase; font-weight: bold; letter-spacing: 1px; }
+        
+        input { width: 100%; padding: 15px; background: #0f172a; border: 1px solid #334155; color: white; border-radius: 8px; font-size: 18px; margin-bottom: 20px; outline: none; transition: 0.2s; }
+        input:focus { border-color: var(--primary); }
+        
+        button { width: 100%; padding: 16px; background: var(--primary); color: #000; border: none; border-radius: 8px; font-size: 16px; font-weight: bold; cursor: pointer; transition: transform 0.1s; }
+        button:active { transform: scale(0.98); }
+        
+        .auction-btn { background: #1e293b; color: var(--primary); border: 2px solid var(--primary); margin-bottom: 15px; display: block; text-align: left; line-height: 1.5;}
+        
+        .hidden { display: none; }
+        .highlight { color: var(--success); }
+    </style>
+</head>
+<body>
+
+    <div class="container">
+        <h2>P2P Art Auction</h2>
+        <div class="subtitle">Cryptographic Light Node</div>
+
+        <div id="loading" style="text-align: center; color: var(--primary); margin: 40px 0;">
+            ⏳ Generating Ed25519 Keys...
+        </div>
+
+        <div id="lobbyView" class="hidden">
+            <div class="label">Your Unique Peer ID</div>
+            <div class="box highlight" id="peerId">...</div>
+
+            <div class="label" style="border-bottom: 1px solid #334155; padding-bottom: 10px; margin-bottom: 15px;">Live Network Auctions</div>
+            <div id="auctionList">
+                <div style="color: #94a3b8; font-size: 13px; text-align: center;">Searching for network auctions...</div>
+            </div>
+        </div>
+
+        <div id="bidView" class="hidden">
+            <button onclick="backToLobby()" style="background: #334155; color: white; margin-bottom: 20px;">⬅ Back to Lobby</button>
+            
+            <div class="label">Selected Auction</div>
+            <div class="box highlight" id="activeAuctionId">...</div>
+
+            <div class="label">Place Sealed Bid</div>
+            <input type="number" id="bidAmount" placeholder="Enter bid (e.g. 250)">
+            <button onclick="placeBid()">Compute Cryptography</button>
+
+            <div id="cryptoOut" class="hidden" style="margin-top: 25px;">
+                <div class="label">Generated Secret Nonce (r)</div>
+                <div class="box" id="nonceOut" style="color: #f87171;">...</div>
+
+                <div class="label">Network Payload Hash (H256)</div>
+                <div class="box highlight" id="hashOut">...</div>
+                
+                <button style="background: #10b981; margin-top: 15px;" onclick="broadcastCommit()">1. Broadcast Commit (Phase 1)</button>
+                <button style="background: #f59e0b; margin-top: 10px;" onclick="broadcastReveal()">2. Reveal Bid (Phase 2)</button>
+                <div id="statusOut" style="margin-top: 15px; font-weight: bold; text-align: center;"></div>
+            </div>
+        </div>
+    </div>
+
+    <script type="module">
+        import init, { BrowserNode } from './pkg/p2p_energy_auction.js';
+
+        let node;
+        let selectedAuctionId = "";
+        
+        // 🔥 GLOBAL IP SETUP
+        const GCP_IP = "34.173.226.135:8080";
+        const BROADCAST_URL = `http://${GCP_IP}/broadcast`;
+        const AUCTIONS_URL = `http://${GCP_IP}/auctions`;
+
+        async function runWasm() {
+            await init(); 
+            node = new BrowserNode(); 
+            document.getElementById('peerId').innerText = node.get_peer_id();
+            document.getElementById('loading').classList.add('hidden');
+            document.getElementById('lobbyView').classList.remove('hidden');
+            
+            // Start polling the server for live rooms every 2 seconds
+            setInterval(pollAuctions, 2000);
+            pollAuctions();
+        }
+
+        async function pollAuctions() {
+            if (!document.getElementById('lobbyView').classList.contains('hidden')) {
+                try {
+                    let res = await fetch(AUCTIONS_URL);
+                    let data = await res.json();
+                    let list = document.getElementById('auctionList');
+                    
+                    if (data.length === 0) {
+                        list.innerHTML = `<div style="color: #94a3b8; font-size: 13px; text-align: center;">No active auctions found.<br>Waiting for host...</div>`;
+                    } else {
+                        list.innerHTML = "";
+                        data.forEach(a => {
+                            let btn = document.createElement('button');
+                            btn.className = "auction-btn";
+                            btn.innerHTML = `🏷️ <b>${a.auction_id}</b><br><span style="font-size: 12px; color: #94a3b8;">Token ID: ${a.token_id} | Reserve: ${a.reserve_price}</span>`;
+                            btn.onclick = () => selectAuction(a.auction_id);
+                            list.appendChild(btn);
+                        });
+                    }
+                } catch(e) {
+                    console.error("Failed to fetch auctions", e);
+                }
+            }
+        }
+
+        window.selectAuction = function(id) {
+            selectedAuctionId = id;
+            document.getElementById('activeAuctionId').innerText = id;
+            document.getElementById('lobbyView').classList.add('hidden');
+            document.getElementById('bidView').classList.remove('hidden');
+            document.getElementById('statusOut').innerText = "";
+        }
+
+        window.backToLobby = function() {
+            selectedAuctionId = "";
+            document.getElementById('cryptoOut').classList.add('hidden');
+            document.getElementById('bidView').classList.add('hidden');
+            document.getElementById('lobbyView').classList.remove('hidden');
+        }
+
+        window.placeBid = function() {
+            const bid = parseInt(document.getElementById('bidAmount').value);
+            if (!bid || bid <= 0) return alert("Please enter a valid bid amount.");
+
+            const payloadHash = node.generate_commit_payload(BigInt(bid));
+            const nonce = node.get_reveal_nonce_hex();
+
+            document.getElementById('nonceOut').innerText = nonce;
+            document.getElementById('hashOut').innerText = payloadHash;
+            document.getElementById('cryptoOut').classList.remove('hidden');
+        };
+
+        window.broadcastCommit = async function() {
+            const payloadHash = document.getElementById('hashOut').innerText;
+            const peerId = document.getElementById('peerId').innerText;
+
+            const msg = {
+                Commit: {
+                    auction_id: selectedAuctionId, // 🔥 Dynamically uses the room you clicked
+                    bidder_id: peerId,
+                    payload_hash: payloadHash
+                }
+            };
+
+            await fetch(BROADCAST_URL, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify(msg)
+            });
+            document.getElementById('statusOut').innerText = "✅ Commit sent to P2P Mesh!";
+            document.getElementById('statusOut').style.color = "#4ade80";
+        };
+
+        window.broadcastReveal = async function() {
+            const bid = parseInt(document.getElementById('bidAmount').value);
+            const nonce = document.getElementById('nonceOut').innerText;
+            const peerId = document.getElementById('peerId').innerText;
+
+            const msg = {
+                Reveal: {
+                    auction_id: selectedAuctionId, // 🔥 Dynamically uses the room you clicked
+                    bidder_id: peerId,
+                    bid: bid,
+                    nonce_hex: nonce
+                }
+            };
+
+            await fetch(BROADCAST_URL, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify(msg)
+            });
+            document.getElementById('statusOut').innerText = "🔓 Reveal sent! Check Laptop Terminal.";
+            document.getElementById('statusOut').style.color = "#f59e0b";
+        };
+
+        runWasm();
+    </script>
+</body>
+</html>

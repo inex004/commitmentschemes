@@ -1,13 +1,13 @@
 use std::error::Error;
 use std::fs;
 use std::time::Duration; 
-use std::collections::hash_map::DefaultHasher; // 🔥 NEW: Needed for Gossipsub
-use std::hash::{Hash, Hasher};                 // 🔥 NEW: Needed for Gossipsub
+use std::collections::hash_map::DefaultHasher; 
+use std::hash::{Hash, Hasher};                 
 
 use libp2p::{
     identity, identify, relay, ping, 
     kad, kad::store::MemoryStore, 
-    gossipsub, // 🔥 NEW: Import Gossipsub
+    gossipsub, 
     swarm::{NetworkBehaviour, SwarmEvent},
     Multiaddr, SwarmBuilder,
 };
@@ -21,7 +21,7 @@ struct RelayBehaviour {
     identify: identify::Behaviour,
     ping: ping::Behaviour,
     kad: kad::Behaviour<MemoryStore>, 
-    gossipsub: gossipsub::Behaviour, // 🔥 NEW: The Relay is now a PubSub Broker!
+    gossipsub: gossipsub::Behaviour, 
 }
 
 #[tokio::main]
@@ -60,7 +60,6 @@ async fn main() -> Result<(), Box<dyn Error>> {
             let mut kademlia = kad::Behaviour::new(local_peer_id, store);
             kademlia.set_mode(Some(kad::Mode::Server)); 
 
-            // 🔥 NEW: Setup Gossipsub for the Relay
             let message_id_fn = |message: &gossipsub::Message| {
                 let mut s = DefaultHasher::new();
                 message.data.hash(&mut s);
@@ -79,7 +78,6 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 gossipsub_config
             ).expect("Correct configuration");
 
-            // 🔥 NEW: The Relay MUST subscribe to the auction topic to repeat the messages!
             let topic = gossipsub::IdentTopic::new("energy-auction");
             gossipsub.subscribe(&topic).unwrap();
 
@@ -88,7 +86,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 identify: identify::Behaviour::new(identify::Config::new("/energy-auction/1.0.0".into(), key.public())),
                 ping: ping::Behaviour::new(ping::Config::new()),
                 kad: kademlia, 
-                gossipsub, // 🔥 Connect the PubSub Broker to the Swarm
+                gossipsub, 
             }
         })?
         .with_swarm_config(|c| c.with_idle_connection_timeout(Duration::from_secs(86400)))
@@ -115,8 +113,12 @@ async fn main() -> Result<(), Box<dyn Error>> {
             event = swarm.select_next_some() => match event {
                 SwarmEvent::NewListenAddr { address, .. } => println!("🟢 Relay Listening on: {:?}", address),
                 SwarmEvent::ConnectionEstablished { peer_id, endpoint, .. } => {
+
                     println!("🤝 Peer connected via QUIC: {}", peer_id);
                     swarm.behaviour_mut().kad.add_address(&peer_id, endpoint.get_remote_address().clone());
+                    // 🔥 NEW: Tell the Relay to join the Mesh with all incoming peers!
+
+                    swarm.behaviour_mut().gossipsub.add_explicit_peer(&peer_id);
                 },
                 SwarmEvent::Behaviour(RelayBehaviourEvent::Relay(relay_event)) => {
                     match relay_event {
@@ -132,7 +134,6 @@ async fn main() -> Result<(), Box<dyn Error>> {
                         _ => {}
                     }
                 },
-                // 🔥 NEW: See the Cloud Relay in action when it bridges your mobile and home networks!
                 SwarmEvent::Behaviour(RelayBehaviourEvent::Gossipsub(gossipsub::Event::Message { propagation_source, .. })) => {
                     println!("📻 [PUB-SUB TOWER]: Safely routing a Gossipsub message from {} to all connected peers!", &propagation_source.to_string()[0..8]);
                 },
