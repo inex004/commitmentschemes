@@ -20,7 +20,7 @@ struct BridgeBehaviour {
     identify: identify::Behaviour, 
 }
 
-// 🔥 HELPER FUNCTION: Safely processes BOTH Announcements and Reveals!
+// 🔥 HELPER FUNCTION: Safely caches all 4 stages of the Auction Lifecycle!
 fn process_auction_message(json: &serde_json::Value, active_auctions: &Arc<Mutex<Vec<serde_json::Value>>>) {
     let mut list = active_auctions.lock().unwrap();
     
@@ -31,6 +31,8 @@ fn process_auction_message(json: &serde_json::Value, active_auctions: &Arc<Mutex
         let mut new_auction = announce.clone();
         if let Some(obj) = new_auction.as_object_mut() {
             obj.insert("bids".to_string(), serde_json::json!([]));
+            obj.insert("validator_id".to_string(), serde_json::Value::Null);
+            obj.insert("verdict".to_string(), serde_json::Value::Null);
         }
         list.push(new_auction);
         println!("📡 [BRIDGE CACHE]: Cached Auction: {}", new_id);
@@ -40,9 +42,6 @@ fn process_auction_message(json: &serde_json::Value, active_auctions: &Arc<Mutex
         for auction in list.iter_mut() {
             if auction["auction_id"].as_str().unwrap_or("") == target_id {
                 if let Some(obj) = auction.as_object_mut() {
-                    if !obj.contains_key("bids") {
-                        obj.insert("bids".to_string(), serde_json::json!([]));
-                    }
                     if let Some(bids) = obj.get_mut("bids").and_then(|b| b.as_array_mut()) {
                         let bidder = reveal["bidder_id"].as_str().unwrap_or("");
                         bids.retain(|b| b["bidder_id"].as_str().unwrap_or("") != bidder);
@@ -50,6 +49,30 @@ fn process_auction_message(json: &serde_json::Value, active_auctions: &Arc<Mutex
                     }
                 }
                 println!("💸 [BRIDGE CACHE]: Attached Reveal bid to auction {}!", target_id);
+            }
+        }
+    }
+    else if let Some(intent) = json.get("IntentToValidate") {
+        let target_id = intent["auction_id"].as_str().unwrap_or("");
+        for auction in list.iter_mut() {
+            if auction["auction_id"].as_str().unwrap_or("") == target_id {
+                if let Some(obj) = auction.as_object_mut() {
+                    if obj.get("validator_id").unwrap_or(&serde_json::Value::Null).is_null() {
+                        obj.insert("validator_id".to_string(), intent["validator_id"].clone());
+                        println!("🛡️ [BRIDGE CACHE]: Added Validator to Auction: {}", target_id);
+                    }
+                }
+            }
+        }
+    }
+    else if let Some(verdict) = json.get("Verdict") {
+        let target_id = verdict["auction_id"].as_str().unwrap_or("");
+        for auction in list.iter_mut() {
+            if auction["auction_id"].as_str().unwrap_or("") == target_id {
+                if let Some(obj) = auction.as_object_mut() {
+                    obj.insert("verdict".to_string(), verdict.clone());
+                    println!("⚖️ [BRIDGE CACHE]: Attached Verdict to Auction: {}", target_id);
+                }
             }
         }
     }

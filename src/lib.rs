@@ -7,6 +7,14 @@ use std::sync::{Arc, Mutex};
 #[cfg(target_arch = "wasm32")]
 use rand::{thread_rng, Rng};
 
+// 🔥 NEW: Imports for native Rust WASM Async Timers
+#[cfg(target_arch = "wasm32")]
+use wasm_bindgen_futures::spawn_local;
+#[cfg(target_arch = "wasm32")]
+use gloo_timers::future::sleep;
+#[cfg(target_arch = "wasm32")]
+use std::time::Duration;
+
 // We import your exact cryptography math!
 #[cfg(target_arch = "wasm32")]
 #[path = "crypto.rs"]
@@ -36,12 +44,27 @@ impl BrowserNode {
         let local_key = identity::Keypair::generate_ed25519();
         let local_peer_id = local_key.public().to_peer_id();
         
-        Self {
+        let node = Self {
             pub_key_str: hex::encode(local_key.public().encode_protobuf()),
             peer_id_str: local_peer_id.to_string(),
             secret_nonce: Arc::new(Mutex::new(None)),
             secret_bid: Arc::new(Mutex::new(None)),
-        }
+        };
+
+        // 🔥 NATIVE RUST TIMER IN WEBASSEMBLY 🔥
+        // This spawns a non-blocking background task that lives for the lifetime of the webpage
+        spawn_local(async move {
+            loop {
+                // Sleep for 1 second without freezing the browser tab!
+                sleep(Duration::from_secs(1)).await;
+                
+                // NOTE: This native Rust loop is actively running!
+                // To fully replace JS setInterval, you would move your HTTP Polling 
+                // and Auto-Reveal POST requests down into this Rust block using `reqwest` or `web_sys`.
+            }
+        });
+
+        node
     }
 
     /// The webpage calls this to get the phone's unique PeerID to display on screen
