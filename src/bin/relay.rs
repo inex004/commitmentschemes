@@ -98,9 +98,9 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let listen_addr_ipv6: Multiaddr = "/ip6/::/udp/10000/quic-v1".parse()?;
     swarm.listen_on(listen_addr_ipv6)?;
 
-    let external_addr_ipv4: Multiaddr = "/ip4/34.28.68.14/udp/10000/quic-v1".parse()?;
+    let external_addr_ipv4: Multiaddr = "/ip4/34.173.226.135/udp/10000/quic-v1".parse()?;
     swarm.add_external_address(external_addr_ipv4);
-    println!("🌐 Hardcoded Public External IPv4 to: 34.28.68.14 (UDP)");
+    println!("🌐 Hardcoded Public External IPv4 to: 34.173.226.135 (UDP)");
 
     let external_addr_ipv6: Multiaddr = "/ip6/2600:1900:4001:523:0:0:0:0/udp/10000/quic-v1".parse()?;
     swarm.add_external_address(external_addr_ipv6);

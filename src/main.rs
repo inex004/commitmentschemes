@@ -271,7 +271,12 @@ async fn main() -> Result<(), Box<dyn Error>> {
                             let msg = network::NetworkMessage::AnnounceAuction {
                                 auction_id: new_auction_id, seller_id: local_peer_id.to_string(), token_id, reserve_price,
                             };
-                            let _ = swarm.behaviour_mut().gossipsub.publish(topic.clone(), serde_json::to_string(&msg).unwrap().as_bytes());
+                            
+                            // 🔥 DIAGNOSTIC TEST: Catch the publish error right here!
+                            match swarm.behaviour_mut().gossipsub.publish(topic.clone(), serde_json::to_string(&msg).unwrap().as_bytes()) {
+                                Ok(_) => println!("🚀 Packet successfully injected into the Gossipsub Mesh!"),
+                                Err(e) => println!("❌ FATAL PUBLISH ERROR: {:?}", e),
+                            }
                         }
                     }
                 } 

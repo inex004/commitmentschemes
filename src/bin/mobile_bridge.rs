@@ -3,10 +3,10 @@ use std::time::Duration;
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use futures::StreamExt;
-use std::sync::{Arc, Mutex}; // 🔥 NEW: Required for shared memory
+use std::sync::{Arc, Mutex}; 
 
 use libp2p::{
-    identity, gossipsub,
+    identity, identify, gossipsub,
     swarm::{NetworkBehaviour, SwarmEvent},
     Multiaddr, SwarmBuilder,
 };
@@ -17,6 +17,42 @@ use bytes::Bytes;
 #[derive(NetworkBehaviour)]
 struct BridgeBehaviour {
     gossipsub: gossipsub::Behaviour,
+    identify: identify::Behaviour, 
+}
+
+// 🔥 HELPER FUNCTION: Safely processes BOTH Announcements and Reveals!
+fn process_auction_message(json: &serde_json::Value, active_auctions: &Arc<Mutex<Vec<serde_json::Value>>>) {
+    let mut list = active_auctions.lock().unwrap();
+    
+    if let Some(announce) = json.get("AnnounceAuction") {
+        let new_id = announce["auction_id"].as_str().unwrap_or("").to_string();
+        list.retain(|a| a["auction_id"].as_str().unwrap_or("") != new_id);
+        
+        let mut new_auction = announce.clone();
+        if let Some(obj) = new_auction.as_object_mut() {
+            obj.insert("bids".to_string(), serde_json::json!([]));
+        }
+        list.push(new_auction);
+        println!("📡 [BRIDGE CACHE]: Cached Auction: {}", new_id);
+    } 
+    else if let Some(reveal) = json.get("Reveal") {
+        let target_id = reveal["auction_id"].as_str().unwrap_or("");
+        for auction in list.iter_mut() {
+            if auction["auction_id"].as_str().unwrap_or("") == target_id {
+                if let Some(obj) = auction.as_object_mut() {
+                    if !obj.contains_key("bids") {
+                        obj.insert("bids".to_string(), serde_json::json!([]));
+                    }
+                    if let Some(bids) = obj.get_mut("bids").and_then(|b| b.as_array_mut()) {
+                        let bidder = reveal["bidder_id"].as_str().unwrap_or("");
+                        bids.retain(|b| b["bidder_id"].as_str().unwrap_or("") != bidder);
+                        bids.push(reveal.clone());
+                    }
+                }
+                println!("💸 [BRIDGE CACHE]: Attached Reveal bid to auction {}!", target_id);
+            }
+        }
+    }
 }
 
 #[tokio::main]
@@ -26,13 +62,12 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let local_key = identity::Keypair::generate_ed25519();
     let (tx, mut rx) = mpsc::channel::<Vec<u8>>(100);
 
-    // 🔥 NEW: Shared memory cache to hold live auctions for the mobile phones
     let active_auctions = Arc::new(Mutex::new(Vec::<serde_json::Value>::new()));
     let auctions_clone = active_auctions.clone();
 
     let cors = warp::cors()
         .allow_any_origin()
-        .allow_methods(vec!["GET", "POST", "OPTIONS"]) // 🔥 Allowed GET
+        .allow_methods(vec!["GET", "POST", "OPTIONS"])
         .allow_headers(vec!["content-type"]);
 
     let tx_clone = tx.clone();
@@ -44,7 +79,6 @@ async fn main() -> Result<(), Box<dyn Error>> {
             warp::reply::with_status("Broadcasted to Mesh", warp::http::StatusCode::OK)
         });
 
-    // 🔥 NEW: Route for mobile phones to fetch the live auction list
     let get_auctions_route = warp::get()
         .and(warp::path("auctions"))
         .map(move || {
@@ -52,7 +86,6 @@ async fn main() -> Result<(), Box<dyn Error>> {
             warp::reply::json(&*list)
         });
 
-    // Combine both routes
     let api_route = broadcast_route.or(get_auctions_route).with(cors);
 
     tokio::spawn(async move {
@@ -60,7 +93,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         warp::serve(api_route).run(([0, 0, 0, 0], 8080)).await;
     });
 
-    let mut swarm = SwarmBuilder::with_existing_identity(local_key)
+    let mut swarm = SwarmBuilder::with_existing_identity(local_key.clone())
         .with_tokio()
         .with_quic()
         .with_behaviour(|key| {
@@ -75,6 +108,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 .message_id_fn(message_id_fn)
                 .build()
                 .unwrap();
+            
             let mut gossipsub = gossipsub::Behaviour::new(
                 gossipsub::MessageAuthenticity::Signed(key.clone()),
                 gossipsub_config
@@ -83,7 +117,11 @@ async fn main() -> Result<(), Box<dyn Error>> {
             let topic = gossipsub::IdentTopic::new("energy-auction");
             gossipsub.subscribe(&topic).unwrap();
             
-            BridgeBehaviour { gossipsub }
+            let identify = identify::Behaviour::new(
+                identify::Config::new("/energy-auction/1.0.0".into(), key.public())
+            );
+
+            BridgeBehaviour { gossipsub, identify }
         })?
         .build();
 
@@ -96,28 +134,23 @@ async fn main() -> Result<(), Box<dyn Error>> {
     loop {
         tokio::select! {
             Some(msg_bytes) = rx.recv() => {
-                println!("📥 Forwarding Web HTTP Bid -> Injected into P2P Gossip Mesh!");
-                let _ = swarm.behaviour_mut().gossipsub.publish(topic.clone(), msg_bytes);
+                if let Ok(json) = serde_json::from_slice::<serde_json::Value>(&msg_bytes) {
+                    process_auction_message(&json, &active_auctions);
+                }
+                match swarm.behaviour_mut().gossipsub.publish(topic.clone(), msg_bytes) {
+                    Ok(_) => println!("🚀 Packet ACTUALLY injected into the Gossipsub Mesh!"),
+                    Err(e) => println!("❌ FATAL BRIDGE PUBLISH ERROR: {:?}", e),
+                }
             },
             event = swarm.select_next_some() => match event {
                 SwarmEvent::ConnectionEstablished { peer_id, .. } => {
                     println!("🤝 Bridge connection verified with peer: {}", peer_id);
-                    // 🔥 NEW: Tell the Mobile Bridge to join the Mesh too!
                     swarm.behaviour_mut().gossipsub.add_explicit_peer(&peer_id);
                 },
-                // 🔥 NEW: Listen to the mesh and save new auctions to the memory cache!
+                SwarmEvent::Behaviour(BridgeBehaviourEvent::Identify(_)) => {},
                 SwarmEvent::Behaviour(BridgeBehaviourEvent::Gossipsub(gossipsub::Event::Message { message, .. })) => {
                     if let Ok(json) = serde_json::from_slice::<serde_json::Value>(&message.data) {
-                        if let Some(announce) = json.get("AnnounceAuction") {
-                            let mut list = active_auctions.lock().unwrap();
-                            let new_id = announce["auction_id"].as_str().unwrap_or("").to_string();
-                            
-                            // Remove old copies if they exist, then add the new one
-                            list.retain(|a| a["auction_id"].as_str().unwrap_or("") != new_id);
-                            list.push(announce.clone());
-                            
-                            println!("📡 [BRIDGE CACHE]: Saved new auction for mobile web view: {}", new_id);
-                        }
+                        process_auction_message(&json, &active_auctions);
                     }
                 },
                 _ => {}

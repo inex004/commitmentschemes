@@ -3,12 +3,12 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>P2P Auction Node</title>
+    <title>P2P Art Auction</title>
     <style>
-        :root { --bg: #0f172a; --surface: #1e293b; --primary: #38bdf8; --text: #f8fafc; --success: #4ade80; }
+        :root { --bg: #0f172a; --surface: #1e293b; --primary: #38bdf8; --text: #f8fafc; --success: #4ade80; --nav: #0b1120; }
         * { box-sizing: border-box; margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
-        body { background: var(--bg); color: var(--text); display: flex; justify-content: center; min-height: 100vh; padding: 20px; }
-        .container { background: var(--surface); padding: 30px; border-radius: 16px; width: 100%; max-width: 420px; box-shadow: 0 10px 30px rgba(0,0,0,0.5); align-self: center; }
+        body { background: var(--bg); color: var(--text); padding-bottom: 80px; }
+        .container { padding: 30px 20px; max-width: 500px; margin: 0 auto; }
         
         h2 { color: var(--primary); text-align: center; margin-bottom: 5px; }
         .subtitle { text-align: center; color: #94a3b8; font-size: 14px; margin-bottom: 25px; }
@@ -21,55 +21,104 @@
         
         button { width: 100%; padding: 16px; background: var(--primary); color: #000; border: none; border-radius: 8px; font-size: 16px; font-weight: bold; cursor: pointer; transition: transform 0.1s; }
         button:active { transform: scale(0.98); }
+        .btn-secondary { background: #334155; color: white; }
         
-        .auction-btn { background: #1e293b; color: var(--primary); border: 2px solid var(--primary); margin-bottom: 15px; display: block; text-align: left; line-height: 1.5;}
+        .auction-btn { background: #1e293b; color: var(--primary); border: 2px solid var(--primary); margin-bottom: 15px; display: block; text-align: left; line-height: 1.5; }
         
-        .hidden { display: none; }
+        .hidden { display: none !important; }
         .highlight { color: var(--success); }
+
+        .navbar { position: fixed; bottom: 0; left: 0; width: 100%; background: var(--nav); display: flex; justify-content: space-around; padding: 15px 0; border-top: 1px solid #334155; z-index: 100; }
+        .nav-item { color: #94a3b8; text-align: center; font-size: 14px; cursor: pointer; font-weight: bold; flex: 1; }
+        .nav-item.active { color: var(--primary); }
+        
+        .art-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 20px; }
+        .art-card { background: linear-gradient(45deg, #1e293b, #0f172a); border: 1px solid #334155; padding: 15px; border-radius: 8px; text-align: center; }
+        
+        .history-card { opacity: 0.6; background: #0b1120; border: 1px solid #1e293b; margin-bottom: 15px; padding: 15px; border-radius: 8px; text-align: left; line-height: 1.5; }
     </style>
 </head>
 <body>
 
     <div class="container">
         <h2>P2P Art Auction</h2>
-        <div class="subtitle">Cryptographic Light Node</div>
+        <div class="subtitle">Cryptographic Web Node</div>
 
         <div id="loading" style="text-align: center; color: var(--primary); margin: 40px 0;">
-            ⏳ Generating Ed25519 Keys...
+            ⏳ Booting WebAssembly & Generating Keys...
         </div>
 
-        <div id="lobbyView" class="hidden">
-            <div class="label">Your Unique Peer ID</div>
-            <div class="box highlight" id="peerId">...</div>
-
-            <div class="label" style="border-bottom: 1px solid #334155; padding-bottom: 10px; margin-bottom: 15px;">Live Network Auctions</div>
-            <div id="auctionList">
-                <div style="color: #94a3b8; font-size: 13px; text-align: center;">Searching for network auctions...</div>
-            </div>
-        </div>
-
-        <div id="bidView" class="hidden">
-            <button onclick="backToLobby()" style="background: #334155; color: white; margin-bottom: 20px;">⬅ Back to Lobby</button>
+        <div id="app" class="hidden">
             
-            <div class="label">Selected Auction</div>
-            <div class="box highlight" id="activeAuctionId">...</div>
-
-            <div class="label">Place Sealed Bid</div>
-            <input type="number" id="bidAmount" placeholder="Enter bid (e.g. 250)">
-            <button onclick="placeBid()">Compute Cryptography</button>
-
-            <div id="cryptoOut" class="hidden" style="margin-top: 25px;">
-                <div class="label">Generated Secret Nonce (r)</div>
-                <div class="box" id="nonceOut" style="color: #f87171;">...</div>
-
-                <div class="label">Network Payload Hash (H256)</div>
-                <div class="box highlight" id="hashOut">...</div>
-                
-                <button style="background: #10b981; margin-top: 15px;" onclick="broadcastCommit()">1. Broadcast Commit (Phase 1)</button>
-                <button style="background: #f59e0b; margin-top: 10px;" onclick="broadcastReveal()">2. Reveal Bid (Phase 2)</button>
-                <div id="statusOut" style="margin-top: 15px; font-weight: bold; text-align: center;"></div>
+            <div id="view-lobby" class="view-section">
+                <div class="label" style="border-bottom: 1px solid #334155; padding-bottom: 10px; margin-bottom: 15px;">Live Network Auctions</div>
+                <div id="auctionList">
+                    <div style="color: #94a3b8; font-size: 13px; text-align: center;">Searching for network auctions...</div>
+                </div>
             </div>
+
+            <div id="view-wallet" class="view-section hidden">
+                <div class="label">Your Unique Peer ID</div>
+                <div class="box highlight" id="peerId">...</div>
+
+                <div class="label">Balance</div>
+                <div class="box highlight" style="font-size: 24px;">💎 <span id="walletBalance">1000</span> Credits</div>
+
+                <div class="label">Your Art Vault</div>
+                <div class="art-grid" id="artVault"></div>
+            </div>
+
+            <div id="view-create" class="view-section hidden">
+                <div class="label">Token ID to Sell</div>
+                <input type="number" id="createTokenId" placeholder="e.g. 123456">
+                
+                <div class="label">Reserve Price (Credits)</div>
+                <input type="number" id="createReserve" placeholder="e.g. 100">
+                
+                <button onclick="announceAuction()">Broadcast Auction</button>
+                <div id="createStatusOut" style="margin-top: 15px; font-weight: bold; text-align: center;"></div>
+            </div>
+
+            <div id="view-history" class="view-section hidden">
+                <div class="label" style="border-bottom: 1px solid #334155; padding-bottom: 10px; margin-bottom: 15px;">Past Auctions</div>
+                <div id="historyList">
+                    <div style="color: #94a3b8; font-size: 13px; text-align: center;">No history yet...</div>
+                </div>
+            </div>
+
+            <div id="view-bid" class="view-section hidden">
+                <button class="btn-secondary" onclick="switchTab('lobby')" style="margin-bottom: 20px;">⬅ Back to Lobby</button>
+                
+                <div class="label">Selected Auction</div>
+                <div class="box highlight" id="activeAuctionId">...</div>
+
+                <div class="label">Time Remaining</div>
+                <div class="box" id="activeTimer" style="text-align: center; font-size: 18px; font-weight: bold; letter-spacing: 1px;">Loading...</div>
+
+                <div class="label">Place Sealed Bid</div>
+                <input type="number" id="bidAmount" placeholder="Enter bid (e.g. 250)">
+                <button onclick="placeBid()">Compute Cryptography</button>
+
+                <div id="cryptoOut" class="hidden" style="margin-top: 25px;">
+                    <div class="label">Generated Secret Nonce (r)</div>
+                    <div class="box" id="nonceOut" style="color: #f87171;">...</div>
+
+                    <div class="label">Network Payload Hash (H256)</div>
+                    <div class="box highlight" id="hashOut">...</div>
+                    
+                    <button id="commitBtn" style="background: #10b981; margin-top: 15px;" onclick="broadcastCommit()">Broadcast Bid to Network</button>
+                    <div id="statusOut" style="margin-top: 15px; font-weight: bold; text-align: center;"></div>
+                </div>
+            </div>
+
         </div>
+    </div>
+
+    <div class="navbar hidden" id="navbar">
+        <div class="nav-item active" id="nav-lobby" onclick="switchTab('lobby')">🏛️ Lobby</div>
+        <div class="nav-item" id="nav-create" onclick="switchTab('create')">➕ Sell Art</div>
+        <div class="nav-item" id="nav-wallet" onclick="switchTab('wallet')">💰 Wallet</div>
+        <div class="nav-item" id="nav-history" onclick="switchTab('history')">📜 History</div>
     </div>
 
     <script type="module">
@@ -77,8 +126,9 @@
 
         let node;
         let selectedAuctionId = "";
+        let pendingReveal = false; 
+        let wallet = { credits: 1000, art: [], settled_auctions: [] }; 
         
-        // 🔥 GLOBAL IP SETUP
         const GCP_IP = "34.173.226.135:8080";
         const BROADCAST_URL = `http://${GCP_IP}/broadcast`;
         const AUCTIONS_URL = `http://${GCP_IP}/auctions`;
@@ -86,58 +136,200 @@
         async function runWasm() {
             await init(); 
             node = new BrowserNode(); 
-            document.getElementById('peerId').innerText = node.get_peer_id();
-            document.getElementById('loading').classList.add('hidden');
-            document.getElementById('lobbyView').classList.remove('hidden');
             
-            // Start polling the server for live rooms every 2 seconds
-            setInterval(pollAuctions, 2000);
+            document.getElementById('peerId').innerText = node.get_peer_id();
+            generateLocalWallet();
+
+            document.getElementById('loading').classList.add('hidden');
+            document.getElementById('app').classList.remove('hidden');
+            document.getElementById('navbar').classList.remove('hidden');
+            
+            setInterval(pollAuctions, 2000); 
+            setInterval(updateSmoothTimer, 1000); 
             pollAuctions();
         }
 
-        async function pollAuctions() {
-            if (!document.getElementById('lobbyView').classList.contains('hidden')) {
-                try {
-                    let res = await fetch(AUCTIONS_URL);
-                    let data = await res.json();
-                    let list = document.getElementById('auctionList');
-                    
-                    if (data.length === 0) {
-                        list.innerHTML = `<div style="color: #94a3b8; font-size: 13px; text-align: center;">No active auctions found.<br>Waiting for host...</div>`;
-                    } else {
-                        list.innerHTML = "";
-                        data.forEach(a => {
-                            let btn = document.createElement('button');
-                            btn.className = "auction-btn";
-                            btn.innerHTML = `🏷️ <b>${a.auction_id}</b><br><span style="font-size: 12px; color: #94a3b8;">Token ID: ${a.token_id} | Reserve: ${a.reserve_price}</span>`;
-                            btn.onclick = () => selectAuction(a.auction_id);
-                            list.appendChild(btn);
-                        });
-                    }
-                } catch(e) {
-                    console.error("Failed to fetch auctions", e);
+        window.switchTab = function(tabName) {
+            document.querySelectorAll('.view-section').forEach(el => el.classList.add('hidden'));
+            document.querySelectorAll('.nav-item').forEach(el => el.classList.remove('active'));
+            
+            document.getElementById('cryptoOut').classList.add('hidden');
+            document.getElementById('commitBtn').classList.remove('hidden');
+            document.getElementById('statusOut').innerText = "";
+            document.getElementById('createStatusOut').innerText = "";
+            pendingReveal = false; 
+
+            if (tabName !== 'bid') {
+                document.getElementById(`nav-${tabName}`).classList.add('active');
+            }
+            document.getElementById(`view-${tabName}`).classList.remove('hidden');
+        }
+
+        function generateLocalWallet() {
+            for(let i=0; i<3; i++) {
+                wallet.art.push(Math.floor(100000 + Math.random() * 900000));
+            }
+            renderWallet();
+        }
+
+        function renderWallet() {
+            document.getElementById('walletBalance').innerText = wallet.credits;
+            const vault = document.getElementById('artVault');
+            vault.innerHTML = "";
+            wallet.art.forEach(token => {
+                vault.innerHTML += `<div class="art-card">
+                    <div style="font-size: 24px; margin-bottom: 5px;">🖼️</div>
+                    <div style="color: var(--primary); font-weight: bold;">#${token}</div>
+                </div>`;
+            });
+        }
+
+        window.announceAuction = async function() {
+            const tokenId = parseInt(document.getElementById('createTokenId').value);
+            const reserve = parseInt(document.getElementById('createReserve').value);
+
+            if (!tokenId || !reserve) return alert("Please enter valid numbers.");
+            if (!wallet.art.includes(tokenId)) return alert("You don't own that Art Token! Check your Wallet.");
+
+            const auctionId = "AUC_" + Math.floor(Date.now() / 1000); 
+            const peerId = document.getElementById('peerId').innerText;
+
+            const msg = {
+                AnnounceAuction: {
+                    auction_id: auctionId,
+                    seller_id: peerId,
+                    token_id: tokenId,
+                    reserve_price: reserve
                 }
+            };
+
+            await fetch(BROADCAST_URL, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(msg) });
+
+            wallet.art = wallet.art.filter(t => t !== tokenId);
+            wallet.credits -= (reserve * 2);
+            renderWallet();
+
+            document.getElementById('createStatusOut').innerText = `✅ Auction ${auctionId} Live!`;
+            document.getElementById('createStatusOut').style.color = "#4ade80";
+            setTimeout(() => switchTab('lobby'), 1500); 
+        }
+
+        function updateSmoothTimer() {
+            if (!document.getElementById('view-bid').classList.contains('hidden') && selectedAuctionId) {
+                const timestamp = parseInt(selectedAuctionId.split('_')[1]);
+                const now = Math.floor(Date.now() / 1000);
+                const age = now - timestamp;
+                let timerEl = document.getElementById('activeTimer');
+
+                if (age <= 240) {
+                    timerEl.innerText = `🟢 COMMIT: ${240 - age}s remaining`;
+                    timerEl.style.color = "#4ade80"; 
+                } else if (age <= 300) {
+                    timerEl.innerText = `🟡 REVEAL: ${300 - age}s remaining`;
+                    timerEl.style.color = "#f59e0b";
+                } else {
+                    timerEl.innerText = `🔴 AUCTION ENDED`;
+                    timerEl.style.color = "#f87171";
+                    if (!pendingReveal && age > 305) switchTab('lobby');
+                }
+            }
+        }
+
+        async function pollAuctions() {
+            if (!document.getElementById('view-lobby').classList.contains('hidden') || 
+                !document.getElementById('view-history').classList.contains('hidden') ||
+                !document.getElementById('view-bid').classList.contains('hidden')) { 
+                
+                try {
+                    let res = await fetch(AUCTIONS_URL, { cache: "no-store" });
+                    let data = await res.json();
+                    
+                    let liveHTML = "";
+                    let historyHTML = "";
+                    const now = Math.floor(Date.now() / 1000);
+                    const myPeerId = document.getElementById('peerId').innerText;
+                    
+                    data.forEach(a => {
+                        const timestamp = parseInt(a.auction_id.split('_')[1]);
+                        const age = now - timestamp;
+                        
+                        if (a.auction_id === selectedAuctionId && pendingReveal && age > 240 && age <= 300) {
+                            pendingReveal = false; 
+                            broadcastReveal();
+                        }
+
+                        if (age > 300) {
+                            historyHTML += `<div class="history-card">
+                                🏷️ <b style="color: #94a3b8;">${a.auction_id}</b><br>
+                                <span style="font-size: 12px; color: #64748b;">Token ID: ${a.token_id} | Reserve: ${a.reserve_price} | 🔴 Ended</span>
+                            </div>`;
+
+                            // 🔥 LOCAL DECENTRALIZED SETTLEMENT LOGIC 
+                            if (!wallet.settled_auctions.includes(a.auction_id)) {
+                                wallet.settled_auctions.push(a.auction_id); // Ensures we only ever process this once!
+
+                                const bids = a.bids || [];
+                                let validBids = bids.filter(b => b.bid >= a.reserve_price).sort((x, y) => y.bid - x.bid);
+                                
+                                if (a.seller_id === myPeerId) {
+                                    const stake = a.reserve_price * 2;
+                                    if (validBids.length > 0) {
+                                        const clearingPrice = validBids.length > 1 ? validBids[1].bid : a.reserve_price;
+                                        wallet.credits += (stake + clearingPrice);
+                                        alert(`🎉 Your Art Token #${a.token_id} SOLD for ${clearingPrice} credits! (Stake Refunded)`);
+                                    } else {
+                                        wallet.credits += stake;
+                                        wallet.art.push(a.token_id);
+                                        alert(`❌ Auction for Token #${a.token_id} failed (no valid bids). Art and Stake returned.`);
+                                    }
+                                    renderWallet();
+                                }
+                                else {
+                                    const myBidObj = bids.find(b => b.bidder_id === myPeerId);
+                                    if (myBidObj) {
+                                        const myBid = myBidObj.bid;
+                                        if (validBids.length > 0 && validBids[0].bidder_id === myPeerId) {
+                                            const clearingPrice = validBids.length > 1 ? validBids[1].bid : a.reserve_price;
+                                            wallet.credits += (myBid - clearingPrice); 
+                                            wallet.art.push(a.token_id);
+                                            alert(`🏆 You WON Token #${a.token_id} for ${clearingPrice} credits!`);
+                                        } else {
+                                            wallet.credits += myBid;
+                                            alert(`⚖️ You lost the auction for Token #${a.token_id}. ${myBid} credits refunded.`);
+                                        }
+                                        renderWallet();
+                                    }
+                                }
+                            }
+                        } else {
+                            let phase = age <= 240 ? `🟢 Commit (${240 - age}s)` : `🟡 Reveal (${300 - age}s)`;
+                            liveHTML += `<button class="auction-btn" onclick="selectAuction('${a.auction_id}')">
+                                🏷️ <b>${a.auction_id}</b><br>
+                                <span style="font-size: 12px; color: #94a3b8;">Token ID: ${a.token_id} | Reserve: ${a.reserve_price} | ${phase}</span>
+                            </button>`;
+                        }
+                    });
+
+                    document.getElementById('auctionList').innerHTML = liveHTML || `<div style="color: #94a3b8; font-size: 13px; text-align: center;">No active auctions found.<br>Create one or wait for host...</div>`;
+                    document.getElementById('historyList').innerHTML = historyHTML || `<div style="color: #94a3b8; font-size: 13px; text-align: center;">No history yet...</div>`;
+                    
+                } catch(e) { console.error("Failed to fetch auctions", e); }
             }
         }
 
         window.selectAuction = function(id) {
             selectedAuctionId = id;
             document.getElementById('activeAuctionId').innerText = id;
-            document.getElementById('lobbyView').classList.add('hidden');
-            document.getElementById('bidView').classList.remove('hidden');
-            document.getElementById('statusOut').innerText = "";
-        }
-
-        window.backToLobby = function() {
-            selectedAuctionId = "";
-            document.getElementById('cryptoOut').classList.add('hidden');
-            document.getElementById('bidView').classList.add('hidden');
-            document.getElementById('lobbyView').classList.remove('hidden');
+            document.getElementById('activeTimer').innerText = "Loading..."; 
+            document.getElementById('activeTimer').style.color = "white";
+            switchTab('bid');
+            updateSmoothTimer(); 
         }
 
         window.placeBid = function() {
             const bid = parseInt(document.getElementById('bidAmount').value);
             if (!bid || bid <= 0) return alert("Please enter a valid bid amount.");
+            if (bid > wallet.credits) return alert("Insufficient funds in web wallet.");
 
             const payloadHash = node.generate_commit_payload(BigInt(bid));
             const nonce = node.get_reveal_nonce_hex();
@@ -151,20 +343,12 @@
             const payloadHash = document.getElementById('hashOut').innerText;
             const peerId = document.getElementById('peerId').innerText;
 
-            const msg = {
-                Commit: {
-                    auction_id: selectedAuctionId, // 🔥 Dynamically uses the room you clicked
-                    bidder_id: peerId,
-                    payload_hash: payloadHash
-                }
-            };
-
-            await fetch(BROADCAST_URL, {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify(msg)
-            });
-            document.getElementById('statusOut').innerText = "✅ Commit sent to P2P Mesh!";
+            const msg = { Commit: { auction_id: selectedAuctionId, bidder_id: peerId, payload_hash: payloadHash } };
+            await fetch(BROADCAST_URL, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(msg) });
+            
+            pendingReveal = true;
+            document.getElementById('commitBtn').classList.add('hidden'); 
+            document.getElementById('statusOut').innerText = "✅ Locked! Waiting for network Reveal phase...";
             document.getElementById('statusOut').style.color = "#4ade80";
         };
 
@@ -173,21 +357,13 @@
             const nonce = document.getElementById('nonceOut').innerText;
             const peerId = document.getElementById('peerId').innerText;
 
-            const msg = {
-                Reveal: {
-                    auction_id: selectedAuctionId, // 🔥 Dynamically uses the room you clicked
-                    bidder_id: peerId,
-                    bid: bid,
-                    nonce_hex: nonce
-                }
-            };
+            const msg = { Reveal: { auction_id: selectedAuctionId, bidder_id: peerId, bid: bid, nonce_hex: nonce } };
+            await fetch(BROADCAST_URL, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(msg) });
+            
+            wallet.credits -= bid; 
+            renderWallet();
 
-            await fetch(BROADCAST_URL, {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify(msg)
-            });
-            document.getElementById('statusOut').innerText = "🔓 Reveal sent! Check Laptop Terminal.";
+            document.getElementById('statusOut').innerText = "🔓 Auto-Reveal Executed! Check Laptop Terminal.";
             document.getElementById('statusOut').style.color = "#f59e0b";
         };
 
