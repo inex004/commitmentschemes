@@ -20,7 +20,7 @@ struct BridgeBehaviour {
     identify: identify::Behaviour, 
 }
 
-// 🔥 HELPER FUNCTION: Safely caches all 4 stages of the Auction Lifecycle!
+// 🔥 HELPER FUNCTION: Now safely caches ALL 5 stages (including Commits!)
 fn process_auction_message(json: &serde_json::Value, active_auctions: &Arc<Mutex<Vec<serde_json::Value>>>) {
     let mut list = active_auctions.lock().unwrap();
     
@@ -31,12 +31,30 @@ fn process_auction_message(json: &serde_json::Value, active_auctions: &Arc<Mutex
         let mut new_auction = announce.clone();
         if let Some(obj) = new_auction.as_object_mut() {
             obj.insert("bids".to_string(), serde_json::json!([]));
+            // 🔥 NEW: Initialize a dictionary to hold the ZK Commitments
+            obj.insert("commitments".to_string(), serde_json::json!({}));
             obj.insert("validator_id".to_string(), serde_json::Value::Null);
             obj.insert("verdict".to_string(), serde_json::Value::Null);
         }
         list.push(new_auction);
         println!("📡 [BRIDGE CACHE]: Cached Auction: {}", new_id);
     } 
+    // 🔥 NEW: Catch the ZK Commitments!
+    else if let Some(commit) = json.get("Commit") {
+        let target_id = commit["auction_id"].as_str().unwrap_or("");
+        for auction in list.iter_mut() {
+            if auction["auction_id"].as_str().unwrap_or("") == target_id {
+                if let Some(obj) = auction.as_object_mut() {
+                    if let Some(commitments) = obj.get_mut("commitments").and_then(|c| c.as_object_mut()) {
+                        let bidder = commit["bidder_id"].as_str().unwrap_or("");
+                        let commitment_hex = commit["commitment"].as_str().unwrap_or("");
+                        commitments.insert(bidder.to_string(), serde_json::json!(commitment_hex));
+                    }
+                }
+                println!("🔒 [BRIDGE CACHE]: Cached ZK Commitment for auction {}!", target_id);
+            }
+        }
+    }
     else if let Some(reveal) = json.get("Reveal") {
         let target_id = reveal["auction_id"].as_str().unwrap_or("");
         for auction in list.iter_mut() {

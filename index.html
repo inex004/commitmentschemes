@@ -92,6 +92,12 @@
                 <div class="label">Selected Auction</div>
                 <div class="box highlight" id="activeAuctionId">...</div>
 
+                <div id="validatorSection" style="margin-bottom: 25px; padding-bottom: 20px; border-bottom: 1px solid #334155;">
+                    <div class="label">Network Referee Status</div>
+                    <div class="box" id="refereeStatus" style="color: #94a3b8;">Loading...</div>
+                    <button id="validateBtn" class="hidden" style="background: #8b5cf6; color: white; margin-bottom: 10px;" onclick="becomeValidator()">🛡️ Stake 100 Credits to Validate</button>
+                </div>
+
                 <div class="label">Time Remaining</div>
                 <div class="box" id="activeTimer" style="text-align: center; font-size: 18px; font-weight: bold; letter-spacing: 1px;">Loading...</div>
 
@@ -103,7 +109,7 @@
                     <div class="label">Generated Secret Nonce (r)</div>
                     <div class="box" id="nonceOut" style="color: #f87171;">...</div>
 
-                    <div class="label">Network Payload Hash (H256)</div>
+                    <div class="label">Zero-Knowledge Commitment (Ristretto)</div>
                     <div class="box highlight" id="hashOut">...</div>
                     
                     <button id="commitBtn" style="background: #10b981; margin-top: 15px;" onclick="broadcastCommit()">Broadcast Bid to Network</button>
@@ -214,6 +220,22 @@
             setTimeout(() => switchTab('lobby'), 1500); 
         }
 
+        window.becomeValidator = async function() {
+            if (wallet.credits < 100) return alert("Insufficient funds to stake as Referee (Need 100).");
+            
+            const peerId = document.getElementById('peerId').innerText;
+            const msg = { IntentToValidate: { auction_id: selectedAuctionId, validator_id: peerId } };
+            
+            await fetch(BROADCAST_URL, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(msg) });
+            
+            wallet.credits -= 100;
+            renderWallet();
+            
+            document.getElementById('validateBtn').classList.add('hidden');
+            document.getElementById('refereeStatus').innerText = "✅ Application Sent to P2P Mesh!";
+            document.getElementById('refereeStatus').style.color = "#4ade80";
+        };
+
         function updateSmoothTimer() {
             if (!document.getElementById('view-bid').classList.contains('hidden') && selectedAuctionId) {
                 const timestamp = parseInt(selectedAuctionId.split('_')[1]);
@@ -235,6 +257,14 @@
             }
         }
 
+        function hexToBytes(hex) {
+            let bytes = new Uint8Array(32);
+            for (let c = 0; c < hex.length; c += 2) {
+                bytes[c / 2] = parseInt(hex.substr(c, 2), 16);
+            }
+            return bytes;
+        }
+
         async function pollAuctions() {
             if (!document.getElementById('view-lobby').classList.contains('hidden') || 
                 !document.getElementById('view-history').classList.contains('hidden') ||
@@ -249,7 +279,8 @@
                     const now = Math.floor(Date.now() / 1000);
                     const myPeerId = document.getElementById('peerId').innerText;
                     
-                    data.forEach(a => {
+                    for (let i = 0; i < data.length; i++) {
+                        let a = data[i];
                         const timestamp = parseInt(a.auction_id.split('_')[1]);
                         const age = now - timestamp;
                         
@@ -258,57 +289,164 @@
                             broadcastReveal();
                         }
 
+                        if (a.auction_id === selectedAuctionId) {
+                            let refBox = document.getElementById('refereeStatus');
+                            let valBtn = document.getElementById('validateBtn');
+                            
+                            if (a.validator_id) {
+                                refBox.innerText = `🛡️ Guarded by ${a.validator_id.substring(0,8)}...`;
+                                refBox.style.color = "#4ade80";
+                                valBtn.classList.add('hidden');
+                            } else {
+                                refBox.innerText = "⚠️ Unvalidated (Network Vulnerable)";
+                                refBox.style.color = "#f87171";
+                                if (age <= 240) valBtn.classList.remove('hidden'); 
+                                else valBtn.classList.add('hidden');
+                            }
+                        }
+
                         if (age > 300) {
                             historyHTML += `<div class="history-card">
                                 🏷️ <b style="color: #94a3b8;">${a.auction_id}</b><br>
                                 <span style="font-size: 12px; color: #64748b;">Token ID: ${a.token_id} | Reserve: ${a.reserve_price} | 🔴 Ended</span>
                             </div>`;
 
-                            // 🔥 LOCAL DECENTRALIZED SETTLEMENT LOGIC 
                             if (!wallet.settled_auctions.includes(a.auction_id)) {
-                                wallet.settled_auctions.push(a.auction_id); // Ensures we only ever process this once!
-
-                                const bids = a.bids || [];
-                                let validBids = bids.filter(b => b.bid >= a.reserve_price).sort((x, y) => y.bid - x.bid);
                                 
-                                if (a.seller_id === myPeerId) {
-                                    const stake = a.reserve_price * 2;
+                                let shouldSettle = false;
+                                if (a.validator_id === myPeerId) {
+                                    shouldSettle = true; 
+                                } else if (a.validator_id && a.validator_id !== myPeerId) {
+                                    if (a.verdict) shouldSettle = true; 
+                                    else if (age > 315) shouldSettle = true; 
+                                } else {
+                                    shouldSettle = true; 
+                                }
+
+                                if (shouldSettle) {
+                                    wallet.settled_auctions.push(a.auction_id); 
+
+                                    let clearingPrice = a.reserve_price;
+                                    let winnerId = null;
+
+                                    // 🔥 ALIGNMENT PATCH: Verifying bids natively through WASM utilizing `commitments`!
+                                    const bids = a.bids || [];
+                                    const commitments = a.commitments || {};
+                                    let cryptographicallyValidBids = [];
+
+                                    for (let b of bids) {
+                                        let storedCommitment = commitments[b.bidder_id];
+                                        if (storedCommitment && typeof node.verify_commitment === 'function') {
+                                            let isValid = node.verify_commitment(storedCommitment, BigInt(b.bid), b.nonce_hex, b.bidder_id);
+                                            if (isValid && b.bid >= a.reserve_price) {
+                                                cryptographicallyValidBids.push(b);
+                                            } else if (!isValid) {
+                                                console.warn(`🚨 Security Alert: Rejecting invalid bid from ${b.bidder_id.substring(0,8)}`);
+                                            }
+                                        } else if (!storedCommitment && b.bid >= a.reserve_price) {
+                                            // Fallback support if peer didn't commit but passed local bridge filter (edge case fallback)
+                                            cryptographicallyValidBids.push(b);
+                                        }
+                                    }
+
+                                    let validBids = cryptographicallyValidBids.sort((x, y) => y.bid - x.bid);
+                                    
                                     if (validBids.length > 0) {
-                                        const clearingPrice = validBids.length > 1 ? validBids[1].bid : a.reserve_price;
-                                        wallet.credits += (stake + clearingPrice);
-                                        alert(`🎉 Your Art Token #${a.token_id} SOLD for ${clearingPrice} credits! (Stake Refunded)`);
-                                    } else {
-                                        wallet.credits += stake;
-                                        wallet.art.push(a.token_id);
-                                        alert(`❌ Auction for Token #${a.token_id} failed (no valid bids). Art and Stake returned.`);
+                                        let highestBid = validBids[0].bid;
+                                        let tiedBidders = validBids.filter(b => b.bid === highestBid);
+
+                                        if (tiedBidders.length === 1) {
+                                            winnerId = tiedBidders[0].bidder_id;
+                                            clearingPrice = validBids.length > 1 ? validBids[1].bid : a.reserve_price;
+                                        } 
+                                        else {
+                                            let combinedXor = new Uint8Array(32);
+                                            for (let peer of tiedBidders) {
+                                                let nonce = hexToBytes(peer.nonce_hex);
+                                                for (let j = 0; j < 32; j++) {
+                                                    combinedXor[j] ^= nonce[j];
+                                                }
+                                            }
+
+                                            let bestPeer = tiedBidders[0].bidder_id;
+                                            let highestScore = -1n;
+
+                                            for (let peer of tiedBidders) {
+                                                let peerNonce = hexToBytes(peer.nonce_hex);
+                                                let concat = new Uint8Array(64);
+                                                concat.set(peerNonce, 0);
+                                                concat.set(combinedXor, 32);
+
+                                                let hashBuffer = await crypto.subtle.digest('SHA-256', concat);
+                                                let score = new DataView(hashBuffer).getBigUint64(0, true);
+
+                                                if (score > highestScore) {
+                                                    highestScore = score;
+                                                    bestPeer = peer.bidder_id;
+                                                }
+                                            }
+
+                                            winnerId = bestPeer;
+                                            let secondHighest = validBids.find(b => b.bidder_id !== bestPeer);
+                                            clearingPrice = secondHighest ? secondHighest.bid : a.reserve_price;
+                                        }
+                                    }
+
+                                    if (a.validator_id === myPeerId && !a.verdict) {
+                                        wallet.credits += 105; 
+                                        alert(`🛡️ Referee Duty Complete! Earned 5 credits for securing Token #${a.token_id}.`);
+                                        
+                                        const verdictMsg = {
+                                            Verdict: {
+                                                auction_id: a.auction_id,
+                                                validator_id: myPeerId,
+                                                winner_id: winnerId,
+                                                clearing_price: clearingPrice,
+                                                slash_list: []
+                                            }
+                                        };
+                                        fetch(BROADCAST_URL, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(verdictMsg) }).catch(e => console.error(e));
+                                    }
+
+                                    if (a.seller_id === myPeerId) {
+                                        const stake = a.reserve_price * 2;
+                                        if (winnerId) {
+                                            wallet.credits += (stake + clearingPrice);
+                                            alert(`🎉 Your Art Token #${a.token_id} SOLD for ${clearingPrice} credits! (Stake Refunded)`);
+                                        } else {
+                                            wallet.credits += stake;
+                                            wallet.art.push(a.token_id);
+                                            alert(`❌ Auction for Token #${a.token_id} failed (no valid bids). Art and Stake returned.`);
+                                        }
+                                    }
+                                    else {
+                                        const bids = a.bids || [];
+                                        const myBidObj = bids.find(b => b.bidder_id === myPeerId);
+                                        
+                                        if (myBidObj) {
+                                            const myBid = myBidObj.bid;
+                                            if (winnerId === myPeerId) {
+                                                wallet.credits += (myBid - clearingPrice); 
+                                                wallet.art.push(a.token_id);
+                                                alert(`🏆 You WON Token #${a.token_id} for ${clearingPrice} credits!`);
+                                            } else {
+                                                wallet.credits += myBid;
+                                                alert(`⚖️ You lost the auction for Token #${a.token_id}. ${myBid} credits refunded.`);
+                                            }
+                                        }
                                     }
                                     renderWallet();
                                 }
-                                else {
-                                    const myBidObj = bids.find(b => b.bidder_id === myPeerId);
-                                    if (myBidObj) {
-                                        const myBid = myBidObj.bid;
-                                        if (validBids.length > 0 && validBids[0].bidder_id === myPeerId) {
-                                            const clearingPrice = validBids.length > 1 ? validBids[1].bid : a.reserve_price;
-                                            wallet.credits += (myBid - clearingPrice); 
-                                            wallet.art.push(a.token_id);
-                                            alert(`🏆 You WON Token #${a.token_id} for ${clearingPrice} credits!`);
-                                        } else {
-                                            wallet.credits += myBid;
-                                            alert(`⚖️ You lost the auction for Token #${a.token_id}. ${myBid} credits refunded.`);
-                                        }
-                                        renderWallet();
-                                    }
-                                }
                             }
                         } else {
+                            let val_status = a.validator_id ? "🛡️ Guarded" : "⚠️ Unvalidated";
                             let phase = age <= 240 ? `🟢 Commit (${240 - age}s)` : `🟡 Reveal (${300 - age}s)`;
                             liveHTML += `<button class="auction-btn" onclick="selectAuction('${a.auction_id}')">
                                 🏷️ <b>${a.auction_id}</b><br>
-                                <span style="font-size: 12px; color: #94a3b8;">Token ID: ${a.token_id} | Reserve: ${a.reserve_price} | ${phase}</span>
+                                <span style="font-size: 12px; color: #94a3b8;">Token ID: ${a.token_id} | Reserve: ${a.reserve_price} | ${val_status} | ${phase}</span>
                             </button>`;
                         }
-                    });
+                    }
 
                     document.getElementById('auctionList').innerHTML = liveHTML || `<div style="color: #94a3b8; font-size: 13px; text-align: center;">No active auctions found.<br>Create one or wait for host...</div>`;
                     document.getElementById('historyList').innerHTML = historyHTML || `<div style="color: #94a3b8; font-size: 13px; text-align: center;">No history yet...</div>`;
@@ -322,6 +460,10 @@
             document.getElementById('activeAuctionId').innerText = id;
             document.getElementById('activeTimer').innerText = "Loading..."; 
             document.getElementById('activeTimer').style.color = "white";
+            
+            document.getElementById('refereeStatus').innerText = "Loading...";
+            document.getElementById('validateBtn').classList.add('hidden');
+            
             switchTab('bid');
             updateSmoothTimer(); 
         }
@@ -331,19 +473,21 @@
             if (!bid || bid <= 0) return alert("Please enter a valid bid amount.");
             if (bid > wallet.credits) return alert("Insufficient funds in web wallet.");
 
-            const payloadHash = node.generate_commit_payload(BigInt(bid));
+            // 🔥 ALIGNMENT PATCH: Updated variable names to reflect the single-hash upgrade
+            const commitmentHex = node.generate_commit_payload(BigInt(bid));
             const nonce = node.get_reveal_nonce_hex();
 
             document.getElementById('nonceOut').innerText = nonce;
-            document.getElementById('hashOut').innerText = payloadHash;
+            document.getElementById('hashOut').innerText = commitmentHex;
             document.getElementById('cryptoOut').classList.remove('hidden');
         };
 
         window.broadcastCommit = async function() {
-            const payloadHash = document.getElementById('hashOut').innerText;
+            // 🔥 ALIGNMENT PATCH: Sends 'commitment' instead of 'payload_hash' to match network.rs
+            const commitmentHex = document.getElementById('hashOut').innerText;
             const peerId = document.getElementById('peerId').innerText;
 
-            const msg = { Commit: { auction_id: selectedAuctionId, bidder_id: peerId, payload_hash: payloadHash } };
+            const msg = { Commit: { auction_id: selectedAuctionId, bidder_id: peerId, commitment: commitmentHex } };
             await fetch(BROADCAST_URL, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(msg) });
             
             pendingReveal = true;

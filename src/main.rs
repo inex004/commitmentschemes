@@ -6,7 +6,7 @@ mod magicsock;
 
 use std::fs;
 use std::collections::HashSet;
-use rand::{thread_rng, Rng}; // ✅ Needed for generating the nonce
+use rand::{thread_rng, Rng}; 
 use std::error::Error;
 use tokio::{io, io::AsyncBufReadExt, select, time}; 
 use futures::StreamExt; 
@@ -133,7 +133,6 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 for (auction_id, current_auction) in state.active_auctions.iter_mut() {
                     if current_unix_secs > current_auction.commit_deadline && current_unix_secs <= current_auction.reveal_deadline && !current_auction.resolved {
                         if Some(auction_id.clone()) == state.current_joined_auction && !has_revealed {
-                            // ✅ Auto-Reveal Logic Updated
                             if let (Some(bid), Some(nonce)) = (state.my_secret_bid, state.my_secret_nonce) {
                                 println!("🔓 REVEAL PHASE: Broadcasting Bid and Random Nonce...");
                                 let msg = network::NetworkMessage::Reveal {
@@ -272,7 +271,6 @@ async fn main() -> Result<(), Box<dyn Error>> {
                                 auction_id: new_auction_id, seller_id: local_peer_id.to_string(), token_id, reserve_price,
                             };
                             
-                            // 🔥 DIAGNOSTIC TEST: Catch the publish error right here!
                             match swarm.behaviour_mut().gossipsub.publish(topic.clone(), serde_json::to_string(&msg).unwrap().as_bytes()) {
                                 Ok(_) => println!("🚀 Packet successfully injected into the Gossipsub Mesh!"),
                                 Err(e) => println!("❌ FATAL PUBLISH ERROR: {:?}", e),
@@ -328,7 +326,6 @@ async fn main() -> Result<(), Box<dyn Error>> {
                             state.my_credits -= bid_amount;
                             state.my_locked_credits += bid_amount;
                             
-                            // ✅ THE NEW CRYPTOGRAPHIC "TWO-HASH" BIDDING LOGIC
                             let mut rng = thread_rng();
                             let mut nonce = [0u8; 32];
                             rng.fill(&mut nonce);
@@ -342,20 +339,20 @@ async fn main() -> Result<(), Box<dyn Error>> {
                             // Curve Math: Calculate the Pedersen Commitment
                             let my_commitment = crypto::commit(bid_amount, s);
                             
-                            // Hash 2: Calculate the anonymous network payload hash
-                            let my_payload_hash = crypto::generate_payload_hash(my_commitment);
+                            // 🔥 ZERO-KNOWLEDGE UPGRADE: No more SHA-256 Hash 2. We use the raw curve point!
+                            let my_commitment_hex = hex::encode(my_commitment.compress().as_bytes());
                             
                             if let Some(joined_auction) = state.active_auctions.get_mut(joined_id) {
-                                joined_auction.received_commitments.insert(local_peer_id.to_string(), my_payload_hash.clone());
+                                joined_auction.received_commitments.insert(local_peer_id.to_string(), my_commitment_hex.clone());
                             }
                             
                             let msg = network::NetworkMessage::Commit {
                                 auction_id: joined_id.clone(), 
                                 bidder_id: local_peer_id.to_string(), 
-                                payload_hash: my_payload_hash, 
+                                commitment: my_commitment_hex, 
                             };
                             let _ = swarm.behaviour_mut().gossipsub.publish(topic.clone(), serde_json::to_string(&msg).unwrap().as_bytes());
-                            println!("🔒 Locked {} credits. Sent Payload Hash to network!", bid_amount);
+                            println!("🔒 Locked {} credits. Sent Zero-Knowledge Commitment to network!", bid_amount);
                         }
                     }
                 }
@@ -416,7 +413,6 @@ async fn main() -> Result<(), Box<dyn Error>> {
                     if peer_id.to_string() == RELAY_PEER_ID {
                         println!("📡 [RELAY]: Securely attached to Cloud Relay.");
                         swarm.behaviour_mut().kad.add_address(&peer_id, addr.clone());
-                        // 🔥 NEW: Explicitly invite the Cloud Relay to the Gossipsub Mesh!
 
                         swarm.behaviour_mut().gossipsub.add_explicit_peer(&peer_id);
                         
@@ -566,21 +562,21 @@ async fn main() -> Result<(), Box<dyn Error>> {
                                     target_auction.verdict_received = true; 
                                 }
                             },
-                            // ✅ NEW: Receive Payload Hash
-                            network::NetworkMessage::Commit { auction_id, bidder_id, payload_hash } => {
+                            // 🔥 ZERO-KNOWLEDGE UPGRADE: Now reads the 'commitment' field!
+                            network::NetworkMessage::Commit { auction_id, bidder_id, commitment } => {
                                 if let Some(target_auction) = state.active_auctions.get_mut(&auction_id) {
                                     if !target_auction.received_commitments.contains_key(&bidder_id) {
-                                        println!("📥 Network: Received hidden cryptographic bid from {}...", &bidder_id[0..8]);
-                                        target_auction.received_commitments.insert(bidder_id, payload_hash);
+                                        println!("📥 Network: Received Zero-Knowledge Commitment from {}...", &bidder_id[0..8]);
+                                        target_auction.received_commitments.insert(bidder_id, commitment);
                                     }
                                 }
                             },
-                            // ✅ NEW: Verify the Payload Hash using the newly revealed raw nonce
+                            // 🔥 ZERO-KNOWLEDGE UPGRADE: Now uses 'verify_commitment' to validate the curve point!
                             network::NetworkMessage::Reveal { auction_id, bidder_id, bid, nonce_hex } => {
                                 if let Some(target_auction) = state.active_auctions.get_mut(&auction_id) {
-                                    if let Some(stored_payload_hash) = target_auction.received_commitments.get(&bidder_id) {
+                                    if let Some(stored_commitment) = target_auction.received_commitments.get(&bidder_id) {
                                         
-                                        if crypto::verify_payload_hash(stored_payload_hash, bid, &nonce_hex, &bidder_id) {
+                                        if crypto::verify_commitment(stored_commitment, bid, &nonce_hex, &bidder_id) {
                                             target_auction.verified_bids.insert(bidder_id.clone(), bid);
                                             
                                             // Extract the byte array to save for tie-breakers

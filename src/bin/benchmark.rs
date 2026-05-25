@@ -1,33 +1,44 @@
 // =============================================================================
-// benchmark.rs  —  place this at:  src/bin/benchmark.rs
+// benchmark.rs  —  place this file at:  src/bin/benchmark.rs
 //
 // Run with:  cargo run --bin benchmark --release
 //
-// --release is MANDATORY. Debug builds are 10-100x slower and give
+// --release is MANDATORY. Debug builds are 10-100x slower and produce
 // meaningless timings. Always benchmark in release mode.
 //
-// This file is 100% self-contained. It does NOT import or modify any
-// existing source file. All crypto logic is reproduced inline here
-// exactly as it appears in crypto.rs, so you can verify the two
-// implementations are equivalent.
+// This file is 100% self-contained and does NOT import or modify any
+// existing source file. All crypto logic is reproduced inline, mirroring
+// the updated crypto.rs exactly.
+//
+// What changed vs. the old benchmark
+// ------------------------------------
+//   OLD:  compared Standard Pedersen vs. Two-Hash (SHA-512 + SHA-256)
+//   NEW:  compares Standard Pedersen vs. Identity-Binding (SHA-512 only)
+//
+//   The SHA-256 payload-hash step (Hash 2) has been removed from the
+//   protocol entirely. The 32-byte compressed Ristretto point is now
+//   broadcast directly on the wire in both the commit and verify paths.
+//   The benchmark reflects this: only one additional hash (SHA-512) is
+//   timed and reported.
 // =============================================================================
 
 use std::time::Instant;
 
 use curve25519_dalek::constants::{
-    RISTRETTO_BASEPOINT_COMPRESSED, RISTRETTO_BASEPOINT_POINT,
+    RISTRETTO_BASEPOINT_COMPRESSED,
+    RISTRETTO_BASEPOINT_POINT,
 };
 use curve25519_dalek::ristretto::RistrettoPoint;
 use curve25519_dalek::scalar::Scalar;
-use sha2::{Digest, Sha256, Sha512};
+use sha2::{Digest, Sha512};
 
 // ── Fixed test inputs ─────────────────────────────────────────────────────────
-// Using fixed values (not randomly generated per trial) ensures the compiler
-// cannot optimise the benchmarked code away as dead computation.
+// Using fixed values (not randomly generated per trial) prevents the compiler
+// from optimising away the benchmarked computation as dead code.
 
-const PEER_ID:   &str    = "12D3KooWBenchmarkPeerIdentity";
-const BID_VALUE: u64     = 250;
-const NONCE:     [u8; 32] = [
+const PEER_ID:    &str     = "12D3KooWBenchmarkPeerIdentity";
+const BID_VALUE:  u64      = 250;
+const NONCE:      [u8; 32] = [
     0xde, 0xad, 0xbe, 0xef, 0xca, 0xfe, 0xba, 0xbe,
     0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef,
     0xfe, 0xdc, 0xba, 0x98, 0x76, 0x54, 0x32, 0x10,
@@ -36,87 +47,100 @@ const NONCE:     [u8; 32] = [
 const TRIALS: u64 = 10_000;
 
 // =============================================================================
-// SCHEME A: Standard Pedersen Commitment (baseline / textbook version)
-//
-//   r  <-  Z_q   (raw scalar, no hash, no identity binding)
-//   C  =   v*G + r*H
-//
-// Security properties:
-//   Identity binding : NO  -- any peer can reuse C as their own commitment
-//   Replay resistant : NO
-//   Bias-free scalar : NO  -- from_bytes_mod_order on 256-bit input has
-//                            slight statistical bias mod 252-bit prime q
-//   Point hidden     : NO  -- C itself would be broadcast on the network
+//  SHARED: H basepoint (same in both schemes)
 // =============================================================================
 
 fn get_h_basepoint() -> RistrettoPoint {
-    RistrettoPoint::hash_from_bytes::<Sha512>(RISTRETTO_BASEPOINT_COMPRESSED.as_bytes())
+    RistrettoPoint::hash_from_bytes::<Sha512>(
+        RISTRETTO_BASEPOINT_COMPRESSED.as_bytes(),
+    )
 }
 
-/// Standard Pedersen: nonce bytes cast directly to scalar via mod-order reduction.
-/// This is the naive approach -- no hash, no identity binding.
-fn standard_nonce_to_scalar(nonce: &[u8; 32]) -> Scalar {
+// =============================================================================
+//  SCHEME A — Standard (Baseline) Pedersen Commitment
+//
+//  The nonce bytes are cast directly to a Ristretto scalar via a raw
+//  mod-order reduction.  No hash, no identity information.
+//
+//      r  <-  {0,1}^256
+//      s  =   from_bytes_mod_order(r)       // direct reduction, slight bias
+//      C  =   v*G + s*H
+//
+//  Verification: recompute C, compare compressed points.
+//
+//  Security properties:
+//      Identity binding   NO  — any peer can copy and reuse C
+//      Replay resistant   NO
+//      Bias-free scalar   NO  — 256-bit → 252-bit prime has residual bias
+//      Algebraic on wire  YES — compressed C is broadcast
+// =============================================================================
+
+/// Cast nonce bytes to scalar via modular reduction (no hash).
+fn baseline_nonce_to_scalar(nonce: &[u8; 32]) -> Scalar {
     Scalar::from_bytes_mod_order(*nonce)
 }
 
-/// Standard Pedersen commit: C = v*G + r*H
-fn standard_commit(v: u64, r: Scalar) -> RistrettoPoint {
+/// C = v*G + s*H  (baseline, s is the raw-reduced nonce).
+fn baseline_commit(v: u64, s: Scalar) -> RistrettoPoint {
     let v_scalar = Scalar::from(v);
     let h = get_h_basepoint();
-    (v_scalar * RISTRETTO_BASEPOINT_POINT) + (r * h)
+    (v_scalar * RISTRETTO_BASEPOINT_POINT) + (s * h)
+}
+
+/// Baseline verify: recompute C and compare compressed hex.
+fn baseline_verify(stored_hex: &str, v: u64, nonce: &[u8; 32]) -> bool {
+    let s   = baseline_nonce_to_scalar(nonce);
+    let c   = baseline_commit(v, s);
+    let hex = hex::encode(c.compress().as_bytes());
+    hex == stored_hex
 }
 
 // =============================================================================
-// SCHEME B: Two-Hash Construction (our protocol, mirrors crypto.rs exactly)
+//  SCHEME B — Identity-Binding Pedersen Commitment  (our protocol)
 //
-//   r      <-  {0,1}^256  (raw byte string, not a field scalar)
-//   s      =   H_512(pk || r) mod q     [Hash 1 -- derive_scalar()]
-//   C      =   v*G + s*H                [commit()]
-//   H_pay  =   H_256(C)                 [Hash 2 -- generate_payload_hash()]
+//  Mirrors crypto.rs exactly after the single-hash upgrade.
 //
-// Security properties gained over standard Pedersen:
-//   Identity binding : YES -- s depends on pk; other peers cannot reuse r
-//   Replay resistant : YES -- copying H_pay fails unless you own pk
-//   Bias-free scalar : YES -- 512-bit digest reduced mod 252-bit q is uniform
-//   Point hidden     : YES -- only H_pay (32 bytes) travels the network
+//      r  <-  {0,1}^256                     // raw byte string
+//      s  =   H_512(pk || r) mod q          // derive_scalar()
+//      C  =   v*G + s*H                     // commit()
+//      broadcast: compress(C)  [32 bytes]   // no further hashing
+//
+//  Verification: recompute s and C, compare compressed points directly.
+//  Mirrors crypto.rs::verify_commitment() exactly.
+//
+//  Security properties gained over baseline:
+//      Identity binding   YES — s depends on pk; copying C fails at reveal
+//      Replay resistant   YES — SHA-512 collision required to forge
+//      Bias-free scalar   YES — 512-bit digest reduced mod 252-bit q
+//      Algebraic on wire  YES — compressed C broadcast, structure preserved
 // =============================================================================
 
-/// Hash 1: s = H_512(pk || r) mod q
-/// Mirrors crypto.rs::derive_scalar() exactly.
-fn two_hash_derive_scalar(peer_id: &str, nonce: &[u8; 32]) -> Scalar {
+/// s = H_512(pk || r) mod q  — mirrors crypto.rs::derive_scalar().
+fn identity_derive_scalar(peer_id: &str, nonce: &[u8; 32]) -> Scalar {
     let mut hasher = Sha512::new();
     hasher.update(peer_id.as_bytes());
     hasher.update(nonce);
     Scalar::from_hash(hasher)
 }
 
-/// Pedersen commit: C = v*G + s*H
-/// Mirrors crypto.rs::commit() exactly.
-fn two_hash_commit(v: u64, s: Scalar) -> RistrettoPoint {
+/// C = v*G + s*H  — mirrors crypto.rs::commit().
+fn identity_commit(v: u64, s: Scalar) -> RistrettoPoint {
     let v_scalar = Scalar::from(v);
     let h = get_h_basepoint();
     (v_scalar * RISTRETTO_BASEPOINT_POINT) + (s * h)
 }
 
-/// Hash 2: H_payload = H_256(C)
-/// Mirrors crypto.rs::generate_payload_hash() exactly.
-fn two_hash_payload(c: RistrettoPoint) -> String {
-    let mut hasher = Sha256::new();
-    hasher.update(c.compress().as_bytes());
-    hex::encode(hasher.finalize())
-}
-
-/// Full verify: rerun both hashes and compare.
-/// Mirrors crypto.rs::verify_payload_hash() exactly.
-fn two_hash_verify(stored: &str, v: u64, nonce: &[u8; 32], peer_id: &str) -> bool {
-    let s          = two_hash_derive_scalar(peer_id, nonce);
-    let c          = two_hash_commit(v, s);
-    let recomputed = two_hash_payload(c);
-    recomputed == stored
+/// Verify by recomputing C and comparing hex of compressed point.
+/// Mirrors crypto.rs::verify_commitment().
+fn identity_verify(stored_hex: &str, v: u64, nonce: &[u8; 32], peer_id: &str) -> bool {
+    let s   = identity_derive_scalar(peer_id, nonce);
+    let c   = identity_commit(v, s);
+    let hex = hex::encode(c.compress().as_bytes());
+    hex == stored_hex
 }
 
 // =============================================================================
-// Benchmarking helpers
+//  Benchmarking helpers
 // =============================================================================
 
 struct Stats {
@@ -127,8 +151,8 @@ struct Stats {
 }
 
 fn bench<F: Fn()>(f: F) -> Stats {
-    // 500-iteration warmup: brings CPU caches and branch predictors to
-    // steady state before any timing starts.
+    // Warmup: brings CPU caches and branch predictors to steady state
+    // before any timing begins.
     for _ in 0..500 { f(); }
 
     let mut samples = Vec::with_capacity(TRIALS as usize);
@@ -141,12 +165,14 @@ fn bench<F: Fn()>(f: F) -> Stats {
     let sum: u128  = samples.iter().sum();
     let mean: u128 = sum / TRIALS as u128;
 
-    let variance: u128 = samples.iter()
+    let variance: u128 = samples
+        .iter()
         .map(|&x| {
             let d = if x > mean { x - mean } else { mean - x };
             d * d
         })
-        .sum::<u128>() / TRIALS as u128;
+        .sum::<u128>()
+        / TRIALS as u128;
 
     Stats {
         mean_ns: mean,
@@ -164,16 +190,15 @@ fn isqrt(n: u128) -> u128 {
     x
 }
 
-fn us(ns: u128) -> f64 { ns as f64 / 1_000.0 }
-
-fn pct(base: u128, ours: u128) -> f64 {
+fn us(ns: u128)              -> f64 { ns as f64 / 1_000.0 }
+fn pct(base: u128, new: u128) -> f64 {
     if base == 0 { return 0.0; }
-    ((ours as f64 - base as f64) / base as f64) * 100.0
+    ((new as f64 - base as f64) / base as f64) * 100.0
 }
 
 fn print_row(label: &str, s: &Stats) {
     println!(
-        "  {:<44}  {:>7.2} us  +/-{:>5.2} us  [{:>6.2} - {:>6.2}]",
+        "  {:<46}  {:>7.2} us  +/-{:>5.2} us  [{:>6.2} .. {:>6.2}]",
         label,
         us(s.mean_ns), us(s.std_ns),
         us(s.min_ns),  us(s.max_ns),
@@ -181,140 +206,156 @@ fn print_row(label: &str, s: &Stats) {
 }
 
 // =============================================================================
-// main
+//  main
 // =============================================================================
 
 fn main() {
     println!();
     println!("==========================================================================");
-    println!("  Pedersen Commitment Benchmark  ({} trials, --release build)", TRIALS);
+    println!("  Identity-Binding Pedersen Benchmark  ({} trials, --release)", TRIALS);
     println!("==========================================================================");
     println!();
-    println!("  Format:  mean  +/-std  [min - max]   (all times in microseconds)");
+    println!("  Format:  mean  +/-std  [min .. max]   (all times in microseconds)");
     println!();
 
     // ── A. Per-step breakdown ─────────────────────────────────────────────────
     println!("--- A. Per-Step Breakdown ---------------------------------------------------");
     println!();
-    println!("  Standard Pedersen (baseline):");
-    println!("  ------------------------------");
+    println!("  Baseline Pedersen (standard, no identity binding):");
+    println!("  ----------------------------------------------------");
 
-    let sa_scalar = bench(|| { let _ = standard_nonce_to_scalar(&NONCE); });
-    print_row("Nonce -> scalar (from_bytes_mod_order)", &sa_scalar);
+    let sa_scalar = bench(|| { let _ = baseline_nonce_to_scalar(&NONCE); });
+    print_row("Nonce → scalar (from_bytes_mod_order)", &sa_scalar);
 
-    let r = standard_nonce_to_scalar(&NONCE);
-    let sa_curve = bench(|| { let _ = standard_commit(BID_VALUE, r); });
-    print_row("Curve arithmetic  (v*G + r*H)", &sa_curve);
+    let s_base = baseline_nonce_to_scalar(&NONCE);
+    let sa_curve = bench(|| { let _ = baseline_commit(BID_VALUE, s_base); });
+    print_row("Curve arithmetic  (v·G + s·H)", &sa_curve);
 
     println!();
-    println!("  Two-Hash Construction (our protocol):");
-    println!("  ---------------------------------------");
+    println!("  Identity-Binding Pedersen (our protocol, SHA-512 scalar derivation):");
+    println!("  -----------------------------------------------------------------------");
 
-    let sb_hash1 = bench(|| { let _ = two_hash_derive_scalar(PEER_ID, &NONCE); });
-    print_row("Hash 1: SHA-512 scalar derivation", &sb_hash1);
+    let sb_hash1 = bench(|| { let _ = identity_derive_scalar(PEER_ID, &NONCE); });
+    print_row("SHA-512 identity binding  (H₅₁₂(pk ‖ r) mod q)", &sb_hash1);
 
-    let s = two_hash_derive_scalar(PEER_ID, &NONCE);
-    let sb_curve = bench(|| { let _ = two_hash_commit(BID_VALUE, s); });
-    print_row("Curve arithmetic  (v*G + s*H)", &sb_curve);
+    let s_ours = identity_derive_scalar(PEER_ID, &NONCE);
+    let sb_curve = bench(|| { let _ = identity_commit(BID_VALUE, s_ours); });
+    print_row("Curve arithmetic  (v·G + s·H)", &sb_curve);
 
-    let c = two_hash_commit(BID_VALUE, s);
-    let sb_hash2 = bench(|| { let _ = two_hash_payload(c); });
-    print_row("Hash 2: SHA-256 payload hash", &sb_hash2);
-
+    println!();
+    println!("  Note: no payload-hash step exists in the updated protocol.");
+    println!("  The 32-byte compressed Ristretto point is broadcast directly.");
     println!();
 
     // ── B. End-to-end totals ──────────────────────────────────────────────────
     println!("--- B. End-to-End Totals ----------------------------------------------------");
     println!();
 
-    let total_standard = bench(|| {
-        let r = standard_nonce_to_scalar(&NONCE);
-        let _ = standard_commit(BID_VALUE, r);
+    let total_baseline = bench(|| {
+        let s = baseline_nonce_to_scalar(&NONCE);
+        let _ = baseline_commit(BID_VALUE, s);
     });
-    print_row("Standard Pedersen -- full commit()", &total_standard);
+    print_row("Baseline Pedersen  — full commit()", &total_baseline);
 
-    let total_two_hash = bench(|| {
-        let s = two_hash_derive_scalar(PEER_ID, &NONCE);
-        let c = two_hash_commit(BID_VALUE, s);
-        let _ = two_hash_payload(c);
+    let total_ours = bench(|| {
+        let s = identity_derive_scalar(PEER_ID, &NONCE);
+        let _ = identity_commit(BID_VALUE, s);
     });
-    print_row("Two-Hash Construction -- full commit()", &total_two_hash);
+    print_row("Identity-Binding   — full commit()", &total_ours);
 
     println!();
 
-    let std_verify = bench(|| {
-        let r = standard_nonce_to_scalar(&NONCE);
-        let _ = standard_commit(BID_VALUE, r);
-        // Standard Pedersen has no separate verify step: the verifier
-        // recomputes C and compares the point directly.
-    });
-    print_row("Standard Pedersen -- verify (recompute + compare)", &std_verify);
-
-    let stored = {
-        let s = two_hash_derive_scalar(PEER_ID, &NONCE);
-        let c = two_hash_commit(BID_VALUE, s);
-        two_hash_payload(c)
+    // Baseline verify: recompute C, compare compressed hex
+    let stored_baseline = {
+        let s = baseline_nonce_to_scalar(&NONCE);
+        let c = baseline_commit(BID_VALUE, s);
+        hex::encode(c.compress().as_bytes())
     };
-    let th_verify = bench(|| {
-        let _ = two_hash_verify(&stored, BID_VALUE, &NONCE, PEER_ID);
+    let baseline_verify_stat = bench(|| {
+        let _ = baseline_verify(&stored_baseline, BID_VALUE, &NONCE);
     });
-    print_row("Two-Hash Construction -- full verify()", &th_verify);
+    print_row("Baseline Pedersen  — verify() (recompute + compare)", &baseline_verify_stat);
+
+    // Identity-binding verify: recompute s, C, compare compressed hex
+    let stored_ours = {
+        let s = identity_derive_scalar(PEER_ID, &NONCE);
+        let c = identity_commit(BID_VALUE, s);
+        hex::encode(c.compress().as_bytes())
+    };
+    let ours_verify_stat = bench(|| {
+        let _ = identity_verify(&stored_ours, BID_VALUE, &NONCE, PEER_ID);
+    });
+    print_row("Identity-Binding   — verify() (recompute + compare)", &ours_verify_stat);
 
     println!();
 
-    // ── C. Summary table ──────────────────────────────────────────────────────
+    // ── C. Summary comparison table ───────────────────────────────────────────
     println!("--- C. Summary Comparison Table ---------------------------------------------");
     println!();
-    println!("  {:<46}  {:>11}  {:>11}  {:>7}",
-        "Operation", "Standard", "Two-Hash", "Overhead");
-    println!("  {}", "-".repeat(80));
+    println!("  {:<48}  {:>11}  {:>11}  {:>8}",
+             "Metric", "Baseline", "Ours", "Overhead");
+    println!("  {}", "-".repeat(84));
 
-    println!("  {:<46}  {:>8.2} us  {:>8.2} us  {:>6.1}%",
+    println!("  {:<48}  {:>8.2} us  {:>8.2} us  {:>7.1}%",
         "Nonce / scalar preparation",
         us(sa_scalar.mean_ns), us(sb_hash1.mean_ns),
         pct(sa_scalar.mean_ns, sb_hash1.mean_ns),
     );
-    println!("  {:<46}  {:>8.2} us  {:>8.2} us  {:>6.1}%",
-        "Curve arithmetic (v*G + s*H)",
+    println!("  {:<48}  {:>8.2} us  {:>8.2} us  {:>7.1}%",
+        "Curve arithmetic (v·G + s·H)",
         us(sa_curve.mean_ns), us(sb_curve.mean_ns),
         pct(sa_curve.mean_ns, sb_curve.mean_ns),
     );
-    println!("  {:<46}  {:>11}  {:>8.2} us  {:>7}",
-        "Payload hash (Hash 2, SHA-256)",
-        "---", us(sb_hash2.mean_ns), "---",
-    );
-    println!("  {}", "-".repeat(80));
-    println!("  {:<46}  {:>8.2} us  {:>8.2} us  {:>6.1}%",
+    println!("  {}", "-".repeat(84));
+    println!("  {:<48}  {:>8.2} us  {:>8.2} us  {:>7.1}%",
         "Total commit()",
-        us(total_standard.mean_ns), us(total_two_hash.mean_ns),
-        pct(total_standard.mean_ns, total_two_hash.mean_ns),
+        us(total_baseline.mean_ns), us(total_ours.mean_ns),
+        pct(total_baseline.mean_ns, total_ours.mean_ns),
     );
-    println!("  {:<46}  {:>8.2} us  {:>8.2} us  {:>6.1}%",
+    println!("  {:<48}  {:>8.2} us  {:>8.2} us  {:>7.1}%",
         "Total verify()",
-        us(std_verify.mean_ns), us(th_verify.mean_ns),
-        pct(std_verify.mean_ns, th_verify.mean_ns),
+        us(baseline_verify_stat.mean_ns), us(ours_verify_stat.mean_ns),
+        pct(baseline_verify_stat.mean_ns, ours_verify_stat.mean_ns),
     );
-    println!("  {}", "-".repeat(80));
-    println!("  {:<46}  {:>11}  {:>11}", "Identity binding",          "No",  "Yes");
-    println!("  {:<46}  {:>11}  {:>11}", "Replay attack resistance",   "No",  "Yes");
-    println!("  {:<46}  {:>11}  {:>11}", "Bias-free blinding scalar",  "No",  "Yes");
-    println!("  {:<46}  {:>11}  {:>11}", "Curve point hidden on wire", "No",  "Yes");
+    println!("  {}", "-".repeat(84));
+    println!("  {:<48}  {:>11}  {:>11}", "Identity binding",         "No",  "Yes");
+    println!("  {:<48}  {:>11}  {:>11}", "Replay attack resistance", "No",  "Yes");
+    println!("  {:<48}  {:>11}  {:>11}", "Bias-free blinding scalar","No",  "Yes");
+    println!("  {:<48}  {:>11}  {:>11}", "Algebraic structure on wire","Yes","Yes");
 
     println!();
 
-    // ── D. Key finding ────────────────────────────────────────────────────────
-    let extra_ns  = sb_hash1.mean_ns + sb_hash2.mean_ns;
-    let total_pct = pct(total_standard.mean_ns, total_two_hash.mean_ns);
+    // ── D. Machine-readable CSV for plot_benchmark.py ────────────────────────
+    println!("--- D. CSV Output (paste into plot_benchmark.py if needed) -----------------");
+    println!();
+    println!("step,baseline_us,ours_us");
+    println!("Nonce/scalar prep,{:.4},{:.4}",
+        us(sa_scalar.mean_ns), us(sb_hash1.mean_ns));
+    println!("Curve arithmetic,{:.4},{:.4}",
+        us(sa_curve.mean_ns), us(sb_curve.mean_ns));
+    println!("Total commit(),{:.4},{:.4}",
+        us(total_baseline.mean_ns), us(total_ours.mean_ns));
+    println!("Total verify(),{:.4},{:.4}",
+        us(baseline_verify_stat.mean_ns), us(ours_verify_stat.mean_ns));
 
-    println!("--- D. Key Finding ----------------------------------------------------------");
+    println!();
+
+    // ── E. Key finding ────────────────────────────────────────────────────────
+    let total_pct   = pct(total_baseline.mean_ns, total_ours.mean_ns);
+    let verify_pct  = pct(baseline_verify_stat.mean_ns, ours_verify_stat.mean_ns);
+    let hash_cost   = us(sb_hash1.mean_ns);
+
+    println!("--- E. Key Finding ----------------------------------------------------------");
     println!();
     println!("  Dominant cost in both schemes : elliptic curve scalar multiplication");
-    println!("  Cost of Hash 1 + Hash 2 alone : {:.2} us", us(extra_ns));
-    println!("  Total overhead of two-hash    : {:.1}%", total_pct);
+    println!("  Cost of SHA-512 identity step : {:.2} us", hash_cost);
+    println!("  Overhead on commit()          : {:.1}%", total_pct);
+    println!("  Overhead on verify()          : {:.1}%", verify_pct);
     println!();
-    println!("  The two additional hash operations (SHA-512 identity binding +");
-    println!("  SHA-256 payload concealment) together add only {:.1}% overhead", total_pct);
-    println!("  while delivering four additional security properties.");
+    println!("  The single SHA-512 identity-binding step adds only {:.1}% overhead",
+             total_pct);
+    println!("  while delivering three additional security properties:");
+    println!("  identity binding, replay resistance, and a bias-free blinding scalar.");
     println!();
     println!("  Trials : {}    Build : --release", TRIALS);
     println!();

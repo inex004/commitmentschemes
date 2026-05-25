@@ -26,6 +26,7 @@ path = "src/bin/mobile_bridge.rs"
 
 [dependencies]
 curve25519-dalek = { version = "4.1", features = ["rand_core", "digest"] }
+plotters = "0.3"
 rand = "0.8"
 sha2 = "0.10"
 hex = "0.4"

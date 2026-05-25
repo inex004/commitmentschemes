@@ -92,11 +92,12 @@ impl BrowserNode {
         // 3. Curve Math: Calculate the Pedersen Commitment
         let my_commitment = crypto::commit(bid_amount, s);
         
-        // 4. Hash 2: Calculate the opaque payload hash
-        let payload_hash = crypto::generate_payload_hash(my_commitment);
+        // 🔥 ZERO-KNOWLEDGE UPGRADE: We skip Hash 2 completely!
+        // We compress the raw algebraic curve point into 32 bytes and return it directly.
+        let commitment_hex = hex::encode(my_commitment.compress().as_bytes());
         
         // Return this to the Javascript so it can be gossiped!
-        payload_hash
+        commitment_hex
     }
 
     /// The webpage calls this when the Reveal Phase starts
@@ -107,5 +108,11 @@ impl BrowserNode {
         } else {
             String::from("ERROR_NO_NONCE")
         }
+    }
+
+    /// 🔥 FRONTEND ALIGNMENT PATCH: Web App calls this to independently verify a peer's Reveal against their Commit!
+    #[wasm_bindgen]
+    pub fn verify_commitment(&self, stored_commitment_hex: &str, bid: u64, nonce_hex: &str, peer_id: &str) -> bool {
+        crypto::verify_commitment(stored_commitment_hex, bid, nonce_hex, peer_id)
     }
 }

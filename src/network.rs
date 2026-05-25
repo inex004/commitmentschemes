@@ -15,9 +15,10 @@ pub enum NetworkMessage {
     AnnounceAuction { auction_id: String, seller_id: String, token_id: u64, reserve_price: u64 },
     IntentToValidate { auction_id: String, validator_id: String },
     Verdict { auction_id: String, validator_id: String, winner_id: Option<String>, clearing_price: u64, slash_list: Vec<String> },
-    // ✅ Updated to payload_hash
-    Commit { auction_id: String, bidder_id: String, payload_hash: String },
-    // ✅ Updated to nonce_hex
+    
+    // 🔥 ZERO-KNOWLEDGE UPGRADE: Replaced 'payload_hash' with 'commitment'
+    Commit { auction_id: String, bidder_id: String, commitment: String },
+    
     Reveal { auction_id: String, bidder_id: String, bid: u64, nonce_hex: String },
     NatSignal { peer_id: String, public_ip: String },
 }

@@ -1,7 +1,7 @@
 use curve25519_dalek::constants::{RISTRETTO_BASEPOINT_POINT, RISTRETTO_BASEPOINT_COMPRESSED};
 use curve25519_dalek::ristretto::RistrettoPoint;
 use curve25519_dalek::scalar::Scalar;
-use sha2::{Sha256, Sha512, Digest}; 
+use sha2::{Sha512, Digest}; // Sha256 has been completely removed!
 
 pub fn get_h_basepoint() -> RistrettoPoint {
     RistrettoPoint::hash_from_bytes::<Sha512>(RISTRETTO_BASEPOINT_COMPRESSED.as_bytes())
@@ -22,15 +22,8 @@ pub fn commit(bid_value: u64, s: Scalar) -> RistrettoPoint {
     (v_scalar * RISTRETTO_BASEPOINT_POINT) + (s * h)
 }
 
-/// Hash 2: Generates the opaque network payload: H_payload = H_256(C)
-pub fn generate_payload_hash(commitment: RistrettoPoint) -> String {
-    let mut hasher = Sha256::new();
-    hasher.update(commitment.compress().as_bytes());
-    hex::encode(hasher.finalize())
-}
-
-/// Re-runs the Two-Hash logic to verify a reveal
-pub fn verify_payload_hash(stored_hash: &str, bid: u64, nonce_hex: &str, peer_id: &str) -> bool {
+/// Verifies a reveal directly against the algebraic Ristretto Point (Zero-Knowledge ready)
+pub fn verify_commitment(stored_commitment_hex: &str, bid: u64, nonce_hex: &str, peer_id: &str) -> bool {
     if let Ok(nonce_bytes) = hex::decode(nonce_hex) {
         if nonce_bytes.len() == 32 {
             let mut nonce = [0u8; 32];
@@ -39,13 +32,13 @@ pub fn verify_payload_hash(stored_hash: &str, bid: u64, nonce_hex: &str, peer_id
             // Step 1: Recompute identity-bound scalar
             let expected_s = derive_scalar(peer_id, &nonce);
             
-            // Step 2: Recompute the commitment
+            // Step 2: Recompute the raw algebraic commitment point
             let expected_commit = commit(bid, expected_s);
             
-            // Step 3: Recompute payload hash and compare
-            let expected_hash = generate_payload_hash(expected_commit);
+            // Step 3: Compress the curve point and compare it to the broadcasted hex
+            let expected_hex = hex::encode(expected_commit.compress().as_bytes());
             
-            return expected_hash == stored_hash;
+            return expected_hex == stored_commitment_hex;
         }
     }
     false
