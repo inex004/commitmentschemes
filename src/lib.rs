@@ -92,7 +92,6 @@ impl BrowserNode {
         // 3. Curve Math: Calculate the Pedersen Commitment
         let my_commitment = crypto::commit(bid_amount, s);
         
-        // 🔥 ZERO-KNOWLEDGE UPGRADE: We skip Hash 2 completely!
         // We compress the raw algebraic curve point into 32 bytes and return it directly.
         let commitment_hex = hex::encode(my_commitment.compress().as_bytes());
         

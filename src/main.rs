@@ -339,7 +339,6 @@ async fn main() -> Result<(), Box<dyn Error>> {
                             // Curve Math: Calculate the Pedersen Commitment
                             let my_commitment = crypto::commit(bid_amount, s);
                             
-                            // 🔥 ZERO-KNOWLEDGE UPGRADE: No more SHA-256 Hash 2. We use the raw curve point!
                             let my_commitment_hex = hex::encode(my_commitment.compress().as_bytes());
                             
                             if let Some(joined_auction) = state.active_auctions.get_mut(joined_id) {
@@ -352,7 +351,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
                                 commitment: my_commitment_hex, 
                             };
                             let _ = swarm.behaviour_mut().gossipsub.publish(topic.clone(), serde_json::to_string(&msg).unwrap().as_bytes());
-                            println!("🔒 Locked {} credits. Sent Zero-Knowledge Commitment to network!", bid_amount);
+                            println!("🔒 Locked {} credits. Sent  Commitment to network!", bid_amount);
                         }
                     }
                 }
@@ -562,16 +561,16 @@ async fn main() -> Result<(), Box<dyn Error>> {
                                     target_auction.verdict_received = true; 
                                 }
                             },
-                            // 🔥 ZERO-KNOWLEDGE UPGRADE: Now reads the 'commitment' field!
+                            //  UPGRADE: Now reads the 'commitment' field!
                             network::NetworkMessage::Commit { auction_id, bidder_id, commitment } => {
                                 if let Some(target_auction) = state.active_auctions.get_mut(&auction_id) {
                                     if !target_auction.received_commitments.contains_key(&bidder_id) {
-                                        println!("📥 Network: Received Zero-Knowledge Commitment from {}...", &bidder_id[0..8]);
+                                        println!("📥 Network: Received  Commitment from {}...", &bidder_id[0..8]);
                                         target_auction.received_commitments.insert(bidder_id, commitment);
                                     }
                                 }
                             },
-                            // 🔥 ZERO-KNOWLEDGE UPGRADE: Now uses 'verify_commitment' to validate the curve point!
+                            // Now uses 'verify_commitment' to validate the curve point!
                             network::NetworkMessage::Reveal { auction_id, bidder_id, bid, nonce_hex } => {
                                 if let Some(target_auction) = state.active_auctions.get_mut(&auction_id) {
                                     if let Some(stored_commitment) = target_auction.received_commitments.get(&bidder_id) {

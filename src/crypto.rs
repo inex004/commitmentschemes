@@ -22,7 +22,7 @@ pub fn commit(bid_value: u64, s: Scalar) -> RistrettoPoint {
     (v_scalar * RISTRETTO_BASEPOINT_POINT) + (s * h)
 }
 
-/// Verifies a reveal directly against the algebraic Ristretto Point (Zero-Knowledge ready)
+/// Verifies a reveal directly against the algebraic Ristretto Point
 pub fn verify_commitment(stored_commitment_hex: &str, bid: u64, nonce_hex: &str, peer_id: &str) -> bool {
     if let Ok(nonce_bytes) = hex::decode(nonce_hex) {
         if nonce_bytes.len() == 32 {
