@@ -106,9 +106,24 @@
                 <div class="label">Time Remaining</div>
                 <div class="box" id="activeTimer" style="text-align: center; font-size: 18px; font-weight: bold; letter-spacing: 1px;">Loading...</div>
 
-                <div class="label">Place Sealed Bid</div>
-                <input type="number" id="bidAmount" placeholder="Enter bid (e.g. 250)">
-                <button onclick="placeBid()">Compute Cryptography</button>
+                <div class="label">Live Network Feed</div>
+                <div class="box" id="liveNetworkFeed" style="height: 120px; overflow-y: auto; color: #94a3b8;">
+                    Waiting for network commitments...
+                </div>
+
+                <div id="sellerValidatorWarning" class="hidden box" style="color: #f59e0b; border-color: #f59e0b; text-align: center; margin-top: 10px;">
+                    <b>⚠️ You are the seller. Validation of your own auction is not permitted.</b>
+                </div>
+
+                <div id="sellerWarning" class="hidden box" style="color: #f59e0b; border-color: #f59e0b; text-align: center;">
+                    <b>⚠️ You are the seller. Shill bidding is cryptographically disabled.</b>
+                </div>
+
+                <div id="biddingSection">
+                    <div class="label">Place Sealed Bid</div>
+                    <input type="number" id="bidAmount" placeholder="Enter bid (e.g. 250)">
+                    <button onclick="placeBid()">Compute Cryptography</button>
+                </div>
 
                 <div id="cryptoOut" class="hidden" style="margin-top: 25px;">
                     <div class="label">Generated Secret Nonce (r)</div>
@@ -141,9 +156,6 @@
         let wallet = { credits: 1000, art: [], settled_auctions: [] }; 
 
         // ── DOUBLE-SETTLEMENT GUARD ───────────────────────────────────────────
-        // Load any auction IDs already settled in this browser session.
-        // sessionStorage resets when the tab is closed but survives page refreshes,
-        // preventing a hacker from refreshing mid-settlement to credit themselves twice.
         (function loadSettledFromSession() {
             try {
                 const stored = sessionStorage.getItem('settled_auctions');
@@ -192,7 +204,6 @@
             }
             document.getElementById(`view-${tabName}`).classList.remove('hidden');
 
-            // Refresh reserve hint whenever the Sell Art tab is opened
             if (tabName === 'create') {
                 updateMaxReserveDisplay();
                 onReserveInput(document.getElementById('createReserve').value);
@@ -220,7 +231,6 @@
 
         // ── 2R RESERVE GUARD HELPERS ──────────────────────────────────────────
         function maxAllowedReserve() {
-            // The system locks 2×R as an anti-spam stake, so R can be at most wallet/2.
             return Math.floor(wallet.credits / 2);
         }
 
@@ -231,9 +241,6 @@
         }
 
         // ── XSS SANITIZATION ─────────────────────────────────────────────────
-        // Escapes all HTML special characters before injecting server data into
-        // innerHTML. Any field from the server (auction_id, token_id, seller_id,
-        // validator_id, reserve_price) must pass through this before rendering.
         function escapeHTML(str) {
             return String(str)
                 .replace(/&/g, "&amp;")
@@ -245,22 +252,17 @@
         // ─────────────────────────────────────────────────────────────────────
 
         // ── INPUT SANITIZATION HELPERS ────────────────────────────────────────
-        // Returns a safe integer reserve value, or null if the input is invalid.
-        // Rejects: empty, NaN, non-finite (Infinity/-Infinity), negative, zero,
-        // values above Number.MAX_SAFE_INTEGER, decimals floor()ed to whole credit.
-        const MAX_CREDITS = Number.MAX_SAFE_INTEGER; // 9007199254740991 — JS integer ceiling
+        const MAX_CREDITS = Number.MAX_SAFE_INTEGER; 
         function sanitizeReserve(value) {
             const raw = parseFloat(value);
             if (value === "" || value === null || value === undefined) return null;
             if (isNaN(raw)) return null;
-            if (!isFinite(raw)) return null;      // blocks Infinity / -Infinity
-            if (raw <= 0) return null;             // blocks negative and zero
-            if (raw > MAX_CREDITS) return null;    // blocks overflow values
-            return Math.floor(raw);                // strips decimals — 99.9 → 99
+            if (!isFinite(raw)) return null;      
+            if (raw <= 0) return null;             
+            if (raw > MAX_CREDITS) return null;    
+            return Math.floor(raw);                
         }
 
-        // Returns a safe integer bid value, or null if the input is invalid.
-        // Same rules as sanitizeReserve — applied to the bid amount field.
         function sanitizeBid(value) {
             const raw = parseFloat(value);
             if (value === "" || value === null || value === undefined) return null;
@@ -280,7 +282,6 @@
             const reserve = sanitizeReserve(value);
 
             if (reserve === null) {
-                // Show specific rejection reason where possible
                 const raw = parseFloat(value);
                 let msg = `💡 Max reserve price you can set: <b id="maxReserveDisplay">${max}</b> credits (half your wallet, since the system locks 2× as an anti-spam stake).`;
                 if (value !== "" && !isNaN(raw)) {
@@ -332,7 +333,6 @@
                 const statusEl = document.getElementById('createStatusOut');
                 statusEl.style.color = "#f87171";
                 statusEl.innerHTML = `🚫 <b>Auction blocked.</b> Reserve of ${reserve} requires a stake of ${requiredStake} credits (2×R), but your wallet only has <b>${wallet.credits}</b> credits.<br><br>Lower your reserve to <b>${max} or less</b> to proceed.`;
-                // Also update the hint in case the user missed it
                 onReserveInput(String(reserve));
                 return;
             }
@@ -384,16 +384,19 @@
                 const age = now - timestamp;
                 let timerEl = document.getElementById('activeTimer');
 
-                if (age <= 240) {
-                    timerEl.innerText = `🟢 COMMIT: ${240 - age}s remaining`;
+                if (age <= 60) {
+                    timerEl.innerText = `🟢 COMMIT: ${60 - age}s remaining`;
                     timerEl.style.color = "#4ade80"; 
-                } else if (age <= 300) {
-                    timerEl.innerText = `🟡 REVEAL: ${300 - age}s remaining`;
+                } else if (age <= 75) {
+                    timerEl.innerText = `🟡 REVEAL: ${75 - age}s remaining`;
                     timerEl.style.color = "#f59e0b";
+                    // 🔥 NEW: Also hide the input box if the phase shifts to Reveal
+                    document.getElementById('biddingSection').classList.add('hidden');
                 } else {
                     timerEl.innerText = `🔴 AUCTION ENDED`;
                     timerEl.style.color = "#f87171";
-                    if (!pendingReveal && age > 305) switchTab('lobby');
+                    document.getElementById('biddingSection').classList.add('hidden');
+                    if (!pendingReveal && age > 80) switchTab('lobby');
                 }
             }
         }
@@ -425,7 +428,7 @@
                         const timestamp = parseInt(a.auction_id.split('_')[1]);
                         const age = now - timestamp;
                         
-                        if (a.auction_id === selectedAuctionId && pendingReveal && age > 240 && age <= 300) {
+                        if (a.auction_id === selectedAuctionId && pendingReveal && age > 60 && age <= 75) {
                             pendingReveal = false; 
                             broadcastReveal();
                         }
@@ -433,20 +436,81 @@
                         if (a.auction_id === selectedAuctionId) {
                             let refBox = document.getElementById('refereeStatus');
                             let valBtn = document.getElementById('validateBtn');
+                            const sellerValWarning = document.getElementById('sellerValidatorWarning');
                             
                             if (a.validator_id) {
                                 refBox.innerText = `🛡️ Guarded by ${a.validator_id.substring(0,8)}...`;
                                 refBox.style.color = "#4ade80";
                                 valBtn.classList.add('hidden');
+                                sellerValWarning.classList.add('hidden');
+                            } else if (a.seller_id === myPeerId) {
+                                refBox.innerText = "⚠️ Unvalidated (Network Vulnerable)";
+                                refBox.style.color = "#f87171";
+                                valBtn.classList.add('hidden');
+                                sellerValWarning.classList.remove('hidden');
                             } else {
                                 refBox.innerText = "⚠️ Unvalidated (Network Vulnerable)";
                                 refBox.style.color = "#f87171";
-                                if (age <= 240) valBtn.classList.remove('hidden'); 
+                                sellerValWarning.classList.add('hidden');
+                                if (age <= 60) valBtn.classList.remove('hidden'); 
                                 else valBtn.classList.add('hidden');
+                            }
+
+                            // 🔥 NEW: ANTI-SHILL & BIDDING SECTION TOGGLE
+                            const bidSection = document.getElementById('biddingSection');
+                            const sellerWarning = document.getElementById('sellerWarning');
+                            if (a.seller_id === myPeerId) {
+                                bidSection.classList.add('hidden');
+                                sellerWarning.classList.remove('hidden');
+                            } else {
+                                sellerWarning.classList.add('hidden');
+                                if (age <= 60) bidSection.classList.remove('hidden');
+                            }
+
+                            // 🔥 LIVE NETWORK FEED: Commit phase shows commitments, Reveal phase shows bids
+                            const feedBox = document.getElementById('liveNetworkFeed');
+                            const commitments = Object.keys(a.commitments || {});
+                            const revealedBids = a.bids || [];
+
+                            if (age > 60 && revealedBids.length > 0) {
+                                // ── REVEAL PHASE: show who bid what ──────────────────────────
+                                let feedStr = `<div style="margin-bottom: 8px; color: #f59e0b; font-weight: bold;">🟡 Reveal Phase — Bids Disclosed:</div>`;
+                                for (let b of revealedBids) {
+                                    const isMe = b.bidder_id === myPeerId;
+                                    const color = isMe ? "var(--success)" : "var(--primary)";
+                                    const label = isMe ? " (You)" : "";
+                                    feedStr += `<div style="margin-bottom: 6px;">› <span style="color:${color};">👀 ${b.bidder_id.substring(0,8)}${label} revealed <b>${b.bid}</b> credits</span></div>`;
+                                }
+                                if (feedBox.innerHTML !== feedStr) {
+                                    feedBox.innerHTML = feedStr;
+                                    feedBox.scrollTop = feedBox.scrollHeight;
+                                }
+                            } else if (age > 60 && revealedBids.length === 0) {
+                                // Reveal phase but no reveals yet
+                                const msg = `<div style="color: #f59e0b;">🟡 Reveal phase started — waiting for peers to reveal bids...</div>`;
+                                if (feedBox.innerHTML !== msg) feedBox.innerHTML = msg;
+                            } else if (commitments.length === 0) {
+                                // Commit phase, nothing yet
+                                if (feedBox.innerHTML !== "Waiting for network commitments...") {
+                                    feedBox.innerHTML = "Waiting for network commitments...";
+                                }
+                            } else {
+                                // ── COMMIT PHASE: show sealed commitments ────────────────────
+                                let feedStr = "";
+                                for (let peer of commitments) {
+                                    const isMe = peer === myPeerId;
+                                    const color = isMe ? "var(--success)" : "var(--primary)";
+                                    const label = isMe ? " (You)" : "";
+                                    feedStr += `<div style="margin-bottom: 6px;">› <span style="color:${color};">🔒 Sealed-Bid  received from ${peer.substring(0,8)}${label}</span></div>`;
+                                }
+                                if (feedBox.innerHTML !== feedStr) {
+                                    feedBox.innerHTML = feedStr;
+                                    feedBox.scrollTop = feedBox.scrollHeight;
+                                }
                             }
                         }
 
-                        if (age > 300) {
+                        if (age > 75) {
                             const safeAucId   = escapeHTML(a.auction_id);
                             const safeTokenId = escapeHTML(a.token_id);
                             const safeReserve = escapeHTML(a.reserve_price);
@@ -462,7 +526,7 @@
                                     shouldSettle = true; 
                                 } else if (a.validator_id && a.validator_id !== myPeerId) {
                                     if (a.verdict) shouldSettle = true; 
-                                    else if (age > 315) shouldSettle = true; 
+                                    else if (age > 90) shouldSettle = true; 
                                 } else {
                                     shouldSettle = true; 
                                 }
@@ -588,7 +652,7 @@
                             const safeReserve = escapeHTML(a.reserve_price);
                             const safeValId   = a.validator_id ? escapeHTML(a.validator_id) : null;
                             const val_status  = safeValId ? "🛡️ Guarded" : "⚠️ Unvalidated";
-                            const phase       = age <= 240 ? `🟢 Commit (${240 - age}s)` : `🟡 Reveal (${300 - age}s)`;
+                            const phase       = age <= 60 ? `🟢 Commit (${60 - age}s)` : `🟡 Reveal (${75 - age}s)`;
                             liveHTML += `<button class="auction-btn" onclick="selectAuction('${safeAucId}')">
                                 🏷️ <b>${safeAucId}</b><br>
                                 <span style="font-size: 12px; color: #94a3b8;">Token ID: ${safeTokenId} | Reserve: ${safeReserve} | ${val_status} | ${phase}</span>
@@ -611,6 +675,12 @@
             
             document.getElementById('refereeStatus').innerText = "Loading...";
             document.getElementById('validateBtn').classList.add('hidden');
+
+            // 🔥 NEW: Reset feed and input states when entering a new auction view
+            document.getElementById('liveNetworkFeed').innerHTML = "Waiting for network commitments...";
+            document.getElementById('biddingSection').classList.remove('hidden');
+            document.getElementById('sellerWarning').classList.add('hidden');
+            document.getElementById('sellerValidatorWarning').classList.add('hidden');
             
             switchTab('bid');
             updateSmoothTimer(); 
